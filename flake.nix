@@ -1,0 +1,216 @@
+{
+  description = "A basic flake to help develop treeland";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+    nix-filter.url = "github:numtide/nix-filter";
+    ddm = {
+      url = "github:linuxdeepin/ddm";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.nix-filter.follows = "nix-filter";
+    };
+    treeland-protocols = {
+      url = "github:linuxdeepin/treeland-protocols";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.nix-filter.follows = "nix-filter";
+    };
+  };
+
+  outputs = { self, nixpkgs, flake-utils, nix-filter, ddm, treeland-protocols }@input:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "riscv64-linux" ]
+      (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        rec {
+          nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              {
+                imports = [ "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix" ];
+
+                environment.systemPackages = with pkgs; [
+                  foot
+                  gdb
+                  seatd
+                  sdnotify-wrapper
+                  treeland
+                ];
+
+                security.pam.services = {
+                  ddm.text = ''
+                    auth      substack      login
+                    account   include       login
+                    password  substack      login
+                    session   include       login
+                  '';
+
+                  ddm-greeter.text = ''
+                    auth     required       pam_succeed_if.so audit quiet_success user = dde
+                    auth     optional       pam_permit.so
+                    account  required       pam_succeed_if.so audit quiet_success user = dde
+                    account  sufficient     pam_unix.so
+                    password required       pam_deny.so
+                    session  required       pam_succeed_if.so audit quiet_success user = dde
+                    session  required       pam_env.so conffile=/etc/pam/environment readenv=0
+                    session  optional       ${pkgs.systemd}/lib/security/pam_systemd.so
+                    session  optional       pam_keyinit.so force revoke
+                    session  optional       pam_permit.so
+                  '';
+
+                  ddm-autologin.text = ''
+                    auth     requisite pam_nologin.so
+                    auth     required  pam_succeed_if.so uid >= 1000 quiet
+                    auth     required  pam_permit.so
+                    account  include   system-local-login
+                    password include   system-local-login
+                    session  include   system-local-login
+                  '';
+                };
+
+                # services.xserver.displayManager.defaultSession =  "Treeland";
+                # services.xserver.displayManager.sessionPackages = [ treeland ];
+                environment.etc."ddm.conf".text = ''
+                  [General]
+                  DisplayServer=single
+                  HaltCommand=/run/current-system/systemd/bin/systemctl poweroff
+                  Numlock=none
+                  RebootCommand=/run/current-system/systemd/bin/systemctl reboot
+                  [Users]
+                  HideShells=/run/current-system/sw/bin/nologin
+                  HideUsers=nixbld1,nixbld10,nixbld11,nixbld12,nixbld13,nixbld14,nixbld15,nixbld16,nixbld17,nixbld18,nixbld19,nixbld2,nixbld20,nixbld21,nixbld22,nixbld23,nixbld24,nixbld25,nixbld26,nixbld27,nixbld28,nixbld29,nixbld3,nixbld30,nixbld31,nixbld32,nixbld4,nixbld5,nixbld6,nixbld7,nixbld8,nixbld9
+                  MaximumUid=30000
+                  [Wayland]
+                  SessionDir=${treeland}/share/wayland-sessions
+                  [Single]
+                  CompositorCommand=treeland
+                  SessionDir=${treeland}/share/wayland-sessions
+                '';
+                environment.pathsToLink = [ "/share/ddm" ];
+
+                users.groups.dde = { };
+                users.users.dde = {
+                  home = "/var/lib/ddm";
+                  group = "dde";
+                  isSystemUser = true;
+                };
+                services.deepin.dde-daemon.enable = true; # DDM
+
+                services.dbus.packages = [ treeland ];
+                systemd.tmpfiles.packages = [ treeland ];
+                # systemd.packages = [ treeland ];
+                systemd.services.display-manager.after = [
+                  "systemd-user-sessions.service"
+                  "getty@tty7.service"
+                  "plymouth-quit.service"
+                  "systemd-logind.service"
+                ];
+                systemd.services.display-manager.conflicts = [
+                  "getty@tty7.service"
+                ];
+
+                systemd.services.display-manager.enable = true;
+
+                services.xserver.enable = true;
+                services.xserver.displayManager.job = {
+                  execCmd = "exec /run/current-system/sw/bin/ddm";
+                };
+                # To enable user switching, allow sddm to allocate TTYs/displays dynamically.
+                services.xserver.tty = null;
+                services.xserver.display = null;
+
+                services.accounts-daemon.enable = true;
+
+                hardware.opengl.enable = true;
+                programs.xwayland.enable = true;
+                security.polkit.enable = true;
+
+                services.dbus.enable = true;
+                services.openssh.enable = true;
+                services.xserver.displayManager.lightdm.enable = false;
+
+                users.users.test = {
+                  isNormalUser = true;
+                  uid = 1000;
+                  extraGroups = [ "wheel" "networkmanager" "sound" "video" "input" "tty" "ssh" ];
+                  password = "test";
+                };
+
+                users.users.test2 = {
+                  isNormalUser = true;
+                  uid = 1001;
+                  password = "test2";
+                };
+
+                virtualisation = {
+                  qemu.options = [ "-vga virtio -device virtio-gpu-pci" ];
+                  cores = 8;
+                  memorySize = 8192;
+                  diskSize = 16384;
+                  resolution = { x = 1920; y = 1080; };
+                };
+                system.stateVersion = "25.05";
+              }
+            ];
+          };
+
+
+          packages = (import ./default.nix {
+              inherit pkgs nix-filter;
+              ddm = ddm.packages.${system}.default;
+              treeland-protocols = treeland-protocols.packages.${system}.default;
+            }) // {
+              qemu = self.nixosConfigurations.${system}.vm.config.system.build.vm;
+            };
+
+          treeland = packages.default;
+
+          apps.qemu = {
+            type = "app";
+            program = "${self.packages.${system}.qemu}/bin/run-nixos-vm";
+          };
+
+          devShells.default = pkgs.mkShell {
+            packages = with pkgs; [
+              # For submodule waylib and qwlroots
+              wayland
+              wayland-protocols
+              wlr-protocols
+              vulkan-loader
+              xorg.libXdmcp
+              xorg.xcbutilerrors
+              seatd
+              wlroots_0_19
+              mesa
+              libdrm
+              vulkan-loader
+              seatd
+            ];
+
+            inputsFrom = [
+              self.packages.${system}.treeland.override {
+                  #It's submodule, prevent infinite loop calls
+                  waylib = null;
+                  qwlroot = null;
+              }
+            ];
+
+            shellHook =
+              let
+                makeQtpluginPath = pkgs.lib.makeSearchPathOutput "out" pkgs.qt6.qtbase.qtPluginPrefix;
+                makeQmlpluginPath = pkgs.lib.makeSearchPathOutput "out" pkgs.qt6.qtbase.qtQmlPrefix;
+              in
+              ''
+                #export QT_LOGGING_RULES="*.debug=true;qt.*.debug=false"
+                #export WAYLAND_DEBUG=1
+                export QT_PLUGIN_PATH=${makeQtpluginPath (with pkgs.qt6; [ qtbase qtdeclarative qtimageformats qtwayland qtsvg ])}
+                export QML2_IMPORT_PATH=${makeQmlpluginPath (with pkgs; with qt6; [ qtdeclarative deepin.dtk6declarative ] )}
+                export QML_IMPORT_PATH=$QML2_IMPORT_PATH
+              '';
+          };
+        }
+      );
+}

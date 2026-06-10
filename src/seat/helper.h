@@ -1,0 +1,458 @@
+// Copyright (C) 2024-2026 UnionTech Software Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+
+#pragma once
+
+#include "core/qmlengine.h"
+#include "modules/activation/activationmanagerinterfacev1.h"
+#include "modules/shortcut/shortcutmanager.h"
+#include "modules/virtual-output/virtualoutputmanagerinterfacev1.h"
+#include "modules/wallpaper/wallpapermanagerinterfacev1.h"
+#include "modules/wallpaper/wallpapernotifierinterfacev1.h"
+#include "modules/window-management/windowmanagementinterfacev1.h"
+#include "utils/fpsdisplaymanager.h"
+
+#include <xcb/xproto.h>
+
+#include <wextforeigntoplevellistv1.h>
+#include <wglobal.h>
+#include <woutputmanagerv1.h>
+#include <wqmlcreator.h>
+#include <wseat.h>
+#include <wxdgdecorationmanager.h>
+#include <wxdgtopleveltagmanager.h>
+
+#include <QList>
+#include <QMap>
+
+#include <optional>
+
+class QJsonObject;
+
+Q_MOC_INCLUDE(<QDBusObjectPath>)
+Q_MOC_INCLUDE(<qwgammacontorlv1.h>)
+Q_MOC_INCLUDE(<qwoutputmanagementv1.h>)
+Q_MOC_INCLUDE(<wlayersurface.h>)
+Q_MOC_INCLUDE(<wtoplevelsurface.h>)
+Q_MOC_INCLUDE(<wxdgsurface.h>)
+Q_MOC_INCLUDE("core/rootsurfacecontainer.h")
+Q_MOC_INCLUDE("modules/capture/capture.h")
+Q_MOC_INCLUDE("surface/surfacewrapper.h")
+Q_MOC_INCLUDE("workspace/workspace.h")
+Q_MOC_INCLUDE("treelandconfig.hpp")
+Q_MOC_INCLUDE("treelanduserconfig.hpp")
+
+QT_BEGIN_NAMESPACE
+class QDBusObjectPath;
+class QQuickItem;
+QT_END_NAMESPACE
+
+WAYLIB_SERVER_BEGIN_NAMESPACE
+class WBackend;
+class WClientPrivate;
+class WCursor;
+class WExtForeignToplevelListV1;
+class WForeignToplevel;
+class WLayerSurface;
+class WOutput;
+class WOutputItem;
+class WOutputLayer;
+class WOutputLayout;
+class WOutputManagerV1;
+class WOutputRenderWindow;
+class WOutputViewport;
+class WServer;
+class WSessionLock;
+class WSessionLockManager;
+class WSocket;
+class WSurface;
+class WSurfaceItem;
+class WToplevelSurface;
+class WXdgDecorationManager;
+class WXWayland;
+
+class WForeignToplevel;
+class WExtForeignToplevelListV1;
+class WOutputManagerV1;
+class WLayerSurface;
+class WSessionLockManager;
+class WSessionLock;
+WAYLIB_SERVER_END_NAMESPACE
+
+class SeatsManager;
+
+QW_BEGIN_NAMESPACE
+class qw_allocator;
+class qw_compositor;
+class qw_ext_foreign_toplevel_image_capture_source_manager_v1;
+class qw_idle_inhibit_manager_v1;
+class qw_idle_inhibitor_v1;
+class qw_idle_notifier_v1;
+class qw_output_configuration_v1;
+class qw_output_power_manager_v1;
+class qw_renderer;
+QW_END_NAMESPACE
+
+WAYLIB_SERVER_USE_NAMESPACE
+QW_USE_NAMESPACE
+
+class CaptureSourceSelector;
+class DDEShellManagerInterfaceV1;
+class DDMInterfaceV1;
+class ForeignToplevelManagerInterfaceV1;
+class FpsDisplayManager;
+class GreeterProxy;
+class ILockScreen;
+class IMultitaskView;
+class LockScreen;
+class LockScreenInterface;
+class Multitaskview;
+class Output;
+class OutputConfigState;
+class OutputLifecycleManager;
+class OutputManagerV1;
+class PersonalizationManagerInterfaceV1;
+class RootSurfaceContainer;
+class ScreensaverInterfaceV1;
+class SessionManager;
+class SettingManager;
+class SessionModel;
+class ShellHandler;
+class ShortcutManagerV2;
+class ShortcutRunner;
+class SurfaceContainer;
+class SurfaceWrapper;
+class TreelandConfig;
+class TreelandUserConfig;
+class TreelandRemoteSource;
+class UserModel;
+class VirtualOutputManagerInterfaceV1;
+class WallpaperColorInterfaceV1;
+class WindowManagementInterfaceV1;
+class WindowPickerInterface;
+class TreelandKeyboardStateNotifyManagerInterfaceV1;
+class WallpaperManager;
+class WallpaperItem;
+class TreelandInputManagerInterfaceV1;
+class InputManager;
+
+struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request;
+struct wlr_idle_inhibitor_v1;
+struct wlr_output_power_v1_set_mode_event;
+namespace Treeland {
+class Treeland;
+}
+
+class Helper : public WSeatEventFilter
+{
+    friend class RootSurfaceContainer;
+    friend class ShortcutRunner;
+    Q_OBJECT
+    Q_PROPERTY(RootSurfaceContainer* rootSurfaceContainer READ rootSurfaceContainer CONSTANT FINAL)
+    Q_PROPERTY(float animationSpeed READ animationSpeed WRITE setAnimationSpeed NOTIFY animationSpeedChanged FINAL)
+    Q_PROPERTY(OutputMode outputMode READ outputMode WRITE setOutputMode NOTIFY outputModeChanged FINAL)
+    Q_PROPERTY(SurfaceWrapper* activatedSurface READ activatedSurface NOTIFY activatedSurfaceChanged FINAL)
+    Q_PROPERTY(Workspace* workspace READ workspace CONSTANT FINAL)
+    Q_PROPERTY(TreelandUserConfig* config READ config CONSTANT FINAL)
+    Q_PROPERTY(TreelandConfig* globalConfig READ globalConfig CONSTANT FINAL)
+    Q_PROPERTY(bool blockActivateSurface READ blockActivateSurface WRITE setBlockActivateSurface NOTIFY blockActivateSurfaceChanged FINAL)
+    Q_PROPERTY(bool noAnimation READ noAnimation WRITE setNoAnimation NOTIFY noAnimationChanged FINAL)
+    Q_PROPERTY(RootSurfaceContainer* rootContainer READ rootContainer CONSTANT FINAL)
+    QML_ELEMENT
+    QML_SINGLETON
+
+public:
+    explicit Helper(QObject *parent = nullptr);
+    ~Helper() override;
+
+    enum class OutputMode
+    {
+        Copy,
+        Extension
+    };
+    Q_ENUM(OutputMode)
+
+    enum class CurrentMode
+    {
+        Normal,
+        LockScreen,
+        WindowSwitch,
+        Multitaskview
+    };
+    Q_ENUM(CurrentMode)
+
+    static Helper *instance();
+    TreelandUserConfig *config();
+    TreelandConfig *globalConfig();
+
+    SessionManager *sessionManager() const;
+    QmlEngine *qmlEngine() const;
+    WOutputRenderWindow *window() const;
+    ShellHandler *shellHandler() const;
+    Workspace *workspace() const;
+
+    void init(Treeland::Treeland *treeland);
+
+    RootSurfaceContainer *rootSurfaceContainer() const;
+    Output *getOutput(WOutput *output) const;
+
+    float animationSpeed() const;
+    void setAnimationSpeed(float newAnimationSpeed);
+
+    OutputMode outputMode() const;
+    void setOutputMode(OutputMode mode);
+    Q_INVOKABLE void addOutput();
+
+    void addSocket(WSocket *socket);
+    [[nodiscard]] WXWayland *createXWayland();
+
+    WSeat *seat() const;
+
+    bool toggleDebugMenuBar();
+
+    WindowManagementInterfaceV1::DesktopState showDesktopState() const;
+
+    Q_INVOKABLE bool isLaunchpad(WLayerSurface *surface) const;
+    Q_INVOKABLE void setLaunchpadMapped(WOutput *output, bool mapped);
+    Q_INVOKABLE void showDesktop(WOutput *output);
+    Q_INVOKABLE void startLockscreen(WOutput *output, bool showAnimation);
+    Q_INVOKABLE QString currentWorkspaceWallpaper(WOutput *output);
+    Q_INVOKABLE QString currentLockScreenWallpaper(WOutput *output);
+
+    void handleWindowPicker(WindowPickerInterface *picker);
+
+    void setMultitaskViewImpl(IMultitaskView *impl);
+    void setLockScreenImpl(ILockScreen *impl);
+
+    CurrentMode currentMode() const
+    {
+        return m_currentMode;
+    }
+
+    void setCurrentMode(CurrentMode mode);
+
+    void showLockScreen(bool switchToGreeter = true);
+
+    Output* getOutputAtCursor() const;
+
+    inline UserModel *userModel() const { return m_userModel; };
+    inline SessionModel *sessionModel() const { return m_sessionModel; };
+    DDMInterfaceV1 *ddmInterfaceV1() const;
+
+    void activateSession();
+    void deactivateSession();
+    void enableRender();
+    void disableRender();
+
+    void setBlockActivateSurface(bool block);
+    bool blockActivateSurface() const;
+    bool noAnimation() const;
+    void toggleFpsDisplay();
+
+    void updateIdleInhibitor();
+
+    bool setXWindowPositionRelative(uint wid, WSurface *anchor, wl_fixed_t dx, wl_fixed_t dy) const;
+    SeatsManager *seatManager() const;
+
+    WSeat *getSeatForEvent(QInputEvent *event) const;
+    WSeat *findSeatForSurface(SurfaceWrapper *wrapper) const;
+    WSeat *getLastInteractingSeat(SurfaceWrapper *surface) const;
+    WSeat *currentEventSeat() const { return m_currentEventSeat; }
+
+    bool isDDMDisplay() const { return m_isDDMDisplay; }
+
+    RootSurfaceContainer *rootContainer() const { return m_rootSurfaceContainer; }
+    inline WBackend *backend() const { return m_backend; }
+public Q_SLOTS:
+    void activateSurface(SurfaceWrapper *wrapper, Qt::FocusReason reason = Qt::OtherFocusReason);
+    void forceActivateSurface(SurfaceWrapper *wrapper,
+                              Qt::FocusReason reason = Qt::OtherFocusReason);
+    void fakePressSurfaceBottomRightToReszie(SurfaceWrapper *surface);
+    bool surfaceBelongsToCurrentSession(SurfaceWrapper *wrapper);
+
+Q_SIGNALS:
+    void primaryOutputChanged();
+    void activatedSurfaceChanged();
+
+    void animationSpeedChanged();
+    void outputModeChanged();
+
+    void currentModeChanged();
+    void noAnimationChanged();
+
+    void blockActivateSurfaceChanged();
+    void requestQuit();
+
+    void launchpadMappedChanged(WOutput *output, bool mapped);
+    void showDesktopRequested(WOutput *output);
+    void startLockscreened(WOutput *output, bool showAnimation);
+
+private Q_SLOTS:
+    void onShowDesktop();
+    void deleteTaskSwitch();
+    void onPrepareForSleep(bool sleep);
+    void onSessionNew(const QString &sessionId, const QDBusObjectPath &objectPath);
+    void onSessionLock();
+    void onSessionUnlock();
+
+private:
+    void onOutputAdded(WOutput *output);
+    void onOutputRemoved(WOutput *output);
+    void onSurfaceModeChanged(WSurface *surface, WXdgDecorationManager::DecorationMode mode);
+    void setGamma(struct wlr_gamma_control_manager_v1_set_gamma_event *event);
+    void onOutputTestOrApply(qw_output_configuration_v1 *config, bool onlyTest);
+    void onSetOutputPowerMode(wlr_output_power_v1_set_mode_event *event);
+    void onNewIdleInhibitor(wlr_idle_inhibitor_v1 *inhibitor);
+    void onSetCopyOutput(VirtualOutputInterfaceV1 *interface);
+    void onRestoreCopyOutput(VirtualOutputInterfaceV1 *interface);
+    void onSurfaceWrapperAdded(SurfaceWrapper *wrapper);
+    void onSurfaceWrapperAboutToRemove(SurfaceWrapper *wrapper);
+    void handleRequestDrag([[maybe_unused]] WSurface *surface);
+    void handleLockScreen(LockScreenInterface *lockScreen);
+    void handleNewForeignToplevelCaptureRequest(wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request);
+    void onExtSessionLock(WSessionLock *lock);
+private:
+    friend class SessionManager;
+    friend class WallpaperManager;
+    friend class WallpaperItem;
+    friend class InputManager;
+
+    void allowNonDrmOutputAutoChangeMode(WOutput *output);
+    int indexOfOutput(WOutput *output) const;
+
+    SurfaceWrapper *keyboardFocusSurface() const;
+    SurfaceWrapper *activatedSurface() const;
+    void setActivatedSurface(SurfaceWrapper *newActivateSurface);
+
+    void setCursorPosition(const QPointF &position);
+
+    bool beforeDisposeEvent(WSeat *seat, QWindow *window, QInputEvent *event) override;
+    bool afterHandleEvent(WSeat *seat, WSurface *watched, QObject *shellObject,
+                         QObject *eventObject, QInputEvent *event) override;
+    bool unacceptedEvent(WSeat *seat, QWindow *window, QInputEvent *event) override;
+
+    void handleLeftButtonStateChanged(const QInputEvent *event);
+    void handleWhellValueChanged(const QInputEvent *event);
+    bool doGesture(QInputEvent *event);
+    Output *createNormalOutput(WOutput *output);
+    Output *createCopyOutput(WOutput *output, Output *proxy);
+    WOutputViewport *getOwnOutputViewport(WOutput *output);
+    QList<SurfaceWrapper *> getWorkspaceSurfaces(Output *filterOutput = nullptr);
+    void moveSurfacesToOutput(const QList<SurfaceWrapper *> &surfaces,
+                              Output *targetOutput,
+                              Output *sourceOutput);
+    void handleCopyModeOutputDisable(Output *affectedOutput);
+    void restoreCopyMode();
+    void applyCopyModeToOutputs(Output *primaryOutput, const QList<SurfaceWrapper *> &surfaces);
+    bool isNvidiaCardPresent();
+    void setWorkspaceVisible(bool visible);
+    void restoreFromShowDesktop(SurfaceWrapper *activeSurface = nullptr);
+    void setNoAnimation(bool noAnimation);
+
+    void updateSurfaceSeatInteraction(SurfaceWrapper *surface, WSeat *seat);
+
+    void switchWorkspaceForSeat(WSeat *seat, int index);
+    void handleRequestDragForSeat(WSeat *seat, WSurface *surface);
+
+    WSeat *m_currentEventSeat = nullptr;
+
+    static Helper *m_instance;
+    std::unique_ptr<TreelandUserConfig> m_config;
+    std::unique_ptr<TreelandConfig> m_globalConfig;
+    Treeland::Treeland *m_treeland = nullptr;
+    FpsDisplayManager *m_fpsManager = nullptr;
+    SessionManager *m_sessionManager = nullptr;
+    WallpaperManager *m_wallpaperManager = nullptr;
+
+    CurrentMode m_currentMode{ CurrentMode::Normal };
+
+    // qtquick helper
+    WOutputRenderWindow *m_renderWindow = nullptr;
+    QQuickItem *m_dockPreview = nullptr;
+    QQuickItem *m_fpsDisplay = nullptr;
+
+    // gesture
+    WServer *m_server = nullptr;
+    RootSurfaceContainer *m_rootSurfaceContainer = nullptr;
+
+    // wayland helper
+    WSeat *m_seat = nullptr;
+    WBackend *m_backend = nullptr;
+    qw_renderer *m_renderer = nullptr;
+    qw_allocator *m_allocator = nullptr;
+
+    // protocols
+    qw_compositor *m_compositor = nullptr;
+    qw_idle_notifier_v1 *m_idleNotifier = nullptr;
+    qw_idle_inhibit_manager_v1 *m_idleInhibitManager = nullptr;
+    qw_output_power_manager_v1 *m_outputPowerManager = nullptr;
+    qw_ext_foreign_toplevel_image_capture_source_manager_v1 *m_foreignToplevelImageCaptureManager = nullptr;
+    ActivationManagerInterfaceV1 *m_activationManagerV1 = nullptr;
+    ShellHandler *m_shellHandler = nullptr;
+    WXdgDecorationManager *m_xdgDecorationManager = nullptr;
+    WXdgToplevelTagManagerV1 *m_xdgToplevelTagManagerV1 = nullptr;
+    WForeignToplevel *m_foreignToplevel = nullptr;
+    WExtForeignToplevelListV1 *m_extForeignToplevelListV1 = nullptr;
+    ShortcutManagerV2 *m_shortcutManager = nullptr;
+    PersonalizationManagerInterfaceV1 *m_personalizationInterfaceV1 = nullptr;
+    WallpaperColorInterfaceV1 *m_wallpaperColorV1 = nullptr;
+    WOutputManagerV1 *m_outputManager = nullptr;
+    WindowManagementInterfaceV1 *m_windowManagementInterfaceV1 = nullptr;
+    WindowManagementInterfaceV1::DesktopState m_showDesktop = WindowManagementInterfaceV1::DesktopState::Normal;
+    DDEShellManagerInterfaceV1 *m_ddeShellV1 = nullptr;
+    VirtualOutputManagerInterfaceV1 *m_virtualOutputInterfaceV1 = nullptr;
+    OutputManagerV1 *m_outputManagerV1 = nullptr;
+    DDMInterfaceV1 *m_ddmInterfaceV1 = nullptr;
+    ScreensaverInterfaceV1 *m_screensaverInterfaceV1 = nullptr;
+    TreelandWallpaperManagerInterfaceV1 *m_wallpaperManagerInterfaceV1 = nullptr;
+    TreelandWallpaperNotifierInterfaceV1 *m_wallpaperNotifierInterfaceV1 = nullptr;
+    TreelandKeyboardStateNotifyManagerInterfaceV1 *m_keyboardStateNotifyManagerInterfaceV1 = nullptr;
+#ifdef EXT_SESSION_LOCK_V1
+    WSessionLockManager *m_sessionLockManager = nullptr;
+    QTimer *m_lockScreenGraceTimer = nullptr;
+#endif
+    // private data
+    QList<Output *> m_outputList;
+    OutputConfigState *m_outputConfigState = nullptr;
+    OutputLifecycleManager *m_outputLifecycleManager = nullptr;
+    QPointer<QQuickItem> m_taskSwitch;
+    QList<qw_idle_inhibitor_v1 *> m_idleInhibitors;
+
+    SurfaceWrapper *m_activatedSurface = nullptr;
+    LockScreen *m_lockScreen = nullptr;
+    float m_animationSpeed = 1.0;
+    OutputMode m_mode = OutputMode::Extension;
+    std::optional<QPointF> m_fakelastPressedPosition;
+
+    QPointer<CaptureSourceSelector> m_captureSelector;
+
+    QPropertyAnimation *m_workspaceScaleAnimation{ nullptr };
+    QPropertyAnimation *m_workspaceOpacityAnimation{ nullptr };
+
+    IMultitaskView *m_multitaskView{ nullptr };
+    UserModel *m_userModel{ nullptr };
+    SessionModel *m_sessionModel{ nullptr };
+    GreeterProxy *m_greeterProxy{ nullptr };
+
+    bool m_blockActivateSurface{ false };
+
+    bool m_noAnimation{ false };
+    bool m_isDDMDisplay{ false };
+    void tryInitRemoteSource();
+
+    TreelandRemoteSource *m_treelandRemoteSource = nullptr;
+
+    struct PendingOutputConfig {
+        qw_output_configuration_v1 *config = nullptr;
+        QList<WOutputState> states;
+        int pendingCommits = 0;
+        bool allSuccess = true;
+    };
+    PendingOutputConfig m_pendingOutputConfig;
+
+    void onOutputCommitFinished(qw_output_configuration_v1 *config, bool success);
+
+    SeatsManager *m_seatManager = nullptr;
+    InputManager *m_inputManager = nullptr;
+    TreelandInputManagerInterfaceV1 *m_inputManagerInterfaceV1 = nullptr;
+};

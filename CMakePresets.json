@@ -1,0 +1,83 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 23,
+        "patch": 0
+    },
+    "include": [],
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Default Config",
+            "description": "Default build using Ninja generator",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build"
+        },
+        {
+            "name": "clang",
+            "displayName": "Default Config for clang",
+            "description": "Default build using Ninja generator",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        },
+        {
+            "name": "ci",
+            "displayName": "CI Build Config",
+            "description": "Build configuration with warnings as errors",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-Wall -Wextra -Werror -Wno-stringop-overflow -Wno-sfinae-incomplete",
+                "CMAKE_C_FLAGS": "-Wall -Wextra -Werror -Wno-stringop-overflow"
+            }
+        },
+        {
+            "name": "ci-clang",
+            "displayName": "CI Build Config for clang",
+            "description": "Build configuration with warnings as errors",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_FLAGS": "-Wall -Wextra -Werror -Wno-shift-overflow -Wno-overloaded-virtual",
+                "CMAKE_C_FLAGS": "-Wall -Wextra -Werror -Wno-shift-overflow -Wno-overloaded-virtual"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default"
+        },
+        {
+            "name": "clang",
+            "configurePreset": "clang"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        },
+        {
+            "name": "ci-clang",
+            "configurePreset": "ci-clang"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "ci",
+            "configurePreset": "ci",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        }
+    ]
+}

@@ -1,0 +1,61 @@
+{
+    "magic": "dsg.config.meta",
+    "version": "1.0",
+    "contents": {
+        "forceSoftwareCursor": {
+            "value": false,
+            "serial": 0,
+            "flags": ["global"],
+            "name": "Force Software Cursor",
+            "name[zh_CN]": "强制软光标渲染",
+            "description": "Force software cursor rendering",
+            "description[zh_CN]": "强制使用软光标进行渲染",
+            "permissions": "readwrite",
+            "visibility": "public"
+        },
+        "enablePrelaunchSplash": {
+            "value": true,
+            "serial": 0,
+            "flags": ["global"],
+            "name": "Enable Prelaunch Splash",
+            "name[zh_CN]": "启用预启动闪屏",
+            "description": "Enable showing prelaunch splash screens during application startup",
+            "description[zh_CN]": "启用应用程序启动期间显示预启动闪屏服务",
+            "permissions": "readwrite",
+            "visibility": "public"
+        },
+        "prelaunchSplashTimeoutMs": {
+            "value": 5000,
+            "serial": 0,
+            "flags": ["global"],
+            "name": "Prelaunch Splash Timeout (ms)",
+            "name[zh_CN]": "预启动闪屏超时（毫秒）",
+            "description": "Timeout before destroying unmatched prelaunch splash wrappers",
+            "description[zh_CN]": "在未匹配到窗口时销毁预启动闪屏的超时时长",
+            "permissions": "readwrite",
+            "visibility": "public"
+        },
+        "debugSource": {
+            "value": false,
+            "serial": 0,
+            "flags": ["global"],
+            "name": "Debug Remote Source",
+            "name[zh_CN]": "调试远程数据源",
+            "description": "Enable the Qt Remote Object remote source for window tree debugging tools. Performance impact when enabled.",
+            "description[zh_CN]": "启用窗口树调试工具的Qt Remote Object远程数据源。开启后会有性能影响。",
+            "permissions": "readwrite",
+            "visibility": "public"
+        },
+        "showOtherUserOption": {
+            "value": false,
+            "serial": 0,
+            "flags": ["global"],
+            "name": "Show Other User Option",
+            "name[zh_CN]": "显示其他用户选项",
+            "description": "Show the 'Other...' entry in the login user list to allow logging in as an unlisted (e.g. LDAP/NSS) user",
+            "description[zh_CN]": "在登录用户列表中显示 Other... 选项，允许以未列出的用户（如 LDAP/NSS 用户）登录",
+            "permissions": "readwrite",
+            "visibility": "public"
+        }
+    }
+}

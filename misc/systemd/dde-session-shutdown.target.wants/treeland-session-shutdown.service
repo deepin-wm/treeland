@@ -1,0 +1,10 @@
+[Unit]
+Description=Treeland shutdown session service
+
+[Service]
+ExecCondition=/bin/sh -c 'test "$TREELAND_RUN_MODE" = "user" || exit 2'
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user unset-environment XDG_SESSION_DESKTOP
+ExecStart=/usr/bin/systemctl --user unset-environment DESKTOP_SESSION
+ExecStart=/usr/bin/systemctl --user unset-environment XDG_SESSION_TYPE
+ExecStart=/usr/bin/systemctl --user unset-environment TREELAND_RUN_MODE

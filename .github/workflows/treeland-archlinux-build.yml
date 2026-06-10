@@ -1,0 +1,139 @@
+name: Build treeland on Arch Linux
+
+# This workflow builds treeland with merged waylib and qwlroots code
+# Dependencies are based on the official ArchLinux PKGBUILD plus
+# additional dependencies from the integrated waylib and qwlroots code
+# treeland-protocols-git is installed from AUR
+
+on:
+  push:
+
+  pull_request:
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Run in container
+        run: |
+          cat /etc/pacman.d/mirrorlist
+          pacman-key --init
+          pacman --noconfirm --noprogressbar -Syu
+
+      - name: Install base dependencies
+        run: |
+          pacman -S --noconfirm --noprogressbar base-devel git cmake ninja pkgconfig clang make
+          pacman -S --noconfirm --noprogressbar fakeroot meson sudo
+
+      - name: Install Qt6 dependencies
+        run: |
+          # Qt6 dependencies matching qwlroots and waylib builds
+          pacman -S --noconfirm --noprogressbar qt6-base qt6-declarative qt6-wayland qt6-tools qt6-remoteobjects
+
+      - name: Install graphics and wayland dependencies
+        run: |
+          # Core graphics and wayland dependencies (matching qwlroots and waylib builds)
+          pacman -S --noconfirm --noprogressbar pixman vulkan-headers wayland wayland-protocols wlr-protocols
+          pacman -S --noconfirm --noprogressbar wlroots0.19 libinput pam systemd-libs jemalloc gcc-libs glibc
+
+      - name: Install additional waylib/qwlroots dependencies
+        run: |
+          # Additional dependencies from waylib and qwlroots build configs
+          pacman -S --noconfirm --noprogressbar libdrm xcb-util-errors libxdmcp
+
+      - name: Install DTK dependencies
+        run: |
+          # Try to install DTK from available packages
+          # If not available, the build will proceed without them (may fail)
+          pacman -S --noconfirm --noprogressbar dtk6core dtk6declarative dtk6systemsettings
+
+      - name: Install DDM dependencies
+        run: |
+          # Try to install DDM from available packages
+          pacman -S --noconfirm --noprogressbar ddm
+
+      - name: Install MPV dependencies
+        run: |
+          # Try to install MPV from available packages
+          pacman -S --noconfirm --noprogressbar mpv
+
+      - name: Build and Install treeland-protocols
+        run: |
+          echo "Building treeland-protocols from source..."
+          git clone https://github.com/linuxdeepin/treeland-protocols.git --depth 1
+          cd treeland-protocols
+          cmake -B build \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          cmake --install build
+          echo "✅ treeland-protocols built and installed from source"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure and Build treeland with ci preset
+        run: |
+          echo "Working directory:" $PWD
+          echo "Configuring treeland with merged waylib and qwlroots code..."
+          rm -rf build
+          cmake --preset ci
+          cmake --build --preset ci
+          echo "✅ treeland built successfully with merged waylib and qwlroots code!"
+
+      - name: Run unit tests
+        run: ctest --preset ci
+
+      - name: Install treeland to staging directory
+        run: |
+          echo "Installing treeland to staging directory..."
+          mkdir -p /tmp/treeland-install
+          DESTDIR=/tmp/treeland-install cmake --install build
+          echo "✅ treeland installed to staging directory"
+
+          echo "Installed files:"
+          find /tmp/treeland-install -type f | head -20
+          echo "Total files installed: $(find /tmp/treeland-install -type f | wc -l)"
+
+      - name: Create treeland installation package
+        run: |
+          cd /tmp/treeland-install
+
+          # Install zip if not available
+          pacman -S --noconfirm zip
+
+          # Create package info
+          echo "Creating package info..."
+          cat > PACKAGE_INFO.txt << EOF
+          Package: treeland-archlinux-build
+          Version: $(date +%Y%m%d-%H%M%S)
+          Architecture: x86_64
+          Built-on: Arch Linux
+          Built-with: merged waylib and qwlroots code
+          CMake-Config: -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib
+
+          Installation Instructions:
+          1. Extract this package to /
+          2. Run: sudo ldconfig (if libraries are included)
+          3. Ensure dependencies are installed on target system
+
+          Files included in this package:
+          EOF
+          find . -type f | sort >> PACKAGE_INFO.txt
+
+          # Create the zip package
+          zip -r /tmp/treeland-archlinux-$(date +%Y%m%d-%H%M%S).zip .
+          echo "✅ treeland installation package created"
+
+          ls -la /tmp/treeland-archlinux-*.zip
+
+      - name: Upload treeland ArchLinux build artifacts
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: treeland-archlinux-build
+          path: "/tmp/treeland-archlinux-*.zip"
+          if-no-files-found: error
+          retention-days: 30

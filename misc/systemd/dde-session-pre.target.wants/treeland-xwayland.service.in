@@ -1,0 +1,23 @@
+[Unit]
+Description=Treeland socket helper service
+CollectMode=inactive-or-failed
+
+Requires=treeland-xwayland.socket
+PartOf=treeland-xwayland.socket
+After=treeland-xwayland.socket
+
+Before=dde-display.service
+
+Requisite=dde-session-pre.target
+PartOf=dde-session-pre.target
+Before=dde-session-pre.target
+
+[Service]
+ExecCondition=/bin/sh -c 'test "$XDG_SESSION_DESKTOP" = "Treeland" || exit 2'
+Type=notify
+Sockets=treeland-xwayland.socket
+UnsetEnvironment=DISPLAY
+ExecStart=@CMAKE_INSTALL_FULL_LIBEXECDIR@/treeland-sd --type xwayland
+ExecStop=-/usr/bin/systemctl --user unset-environment DISPLAY
+Slice=session.slice
+RestartSec=3s

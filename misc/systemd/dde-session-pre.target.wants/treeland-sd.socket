@@ -1,0 +1,12 @@
+[Unit]
+Description=User Compositor Socket
+PartOf=treeland-sd.service
+
+Requisite=dde-session-pre.target
+PartOf=dde-session-pre.target
+Before=dde-session-pre.target
+
+[Socket]
+ListenStream=%t/treeland.socket
+RemoveOnStop=true
+FileDescriptorName=Treeland
