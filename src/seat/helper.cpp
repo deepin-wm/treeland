@@ -2343,6 +2343,11 @@ RootSurfaceContainer *Helper::rootSurfaceContainer() const
     return m_rootSurfaceContainer;
 }
 
+WServer *Helper::server() const
+{
+    return m_server;
+}
+
 void Helper::fakePressSurfaceBottomRightToReszie(SurfaceWrapper *surface)
 {
     auto position = surface->geometry().bottomRight();
