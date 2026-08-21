@@ -54,11 +54,12 @@ jobs:
           set -e
 
           #if [ "$CHECKDEPS_RC" -ne 0 ] && grep -qi 'libddm-dev' /tmp/treeland-checkdeps.err; then
-            echo "⚠️ libddm-dev unavailable from repo, building ddm from source (master) as fallback"
+            echo "⚠️ libddm-dev unavailable from repo, building ddm from source (PR #106 branch) as fallback"
             cat /tmp/treeland-checkdeps.err
             cd /tmp
             if [ ! -d ddm ]; then
-              git clone --depth=1 https://github.com/linuxdeepin/ddm.git
+              # Use glyvut/ddm fork (master = ddm PR #106 head) which contains DaemonMessages::ShowGreeter
+              git clone --depth=1 https://github.com/glyvut/ddm.git
             fi
             cd ddm
             # Install ddm build-deps

@@ -53,10 +53,10 @@ jobs:
           # If not available, the build will proceed without them (may fail)
           pacman -S --noconfirm --noprogressbar dtk6core dtk6declarative dtk6systemsettings
 
-      - name: Install DDM dependencies
+      - name: Install DDM build dependencies
         run: |
-          # Try to install DDM from available packages
-          pacman -S --noconfirm --noprogressbar ddm
+          # Install ddm build dependencies (ddm will be built from source below)
+          pacman -S --noconfirm --noprogressbar extra-cmake-modules pam libxau
 
       - name: Install MPV dependencies
         run: |
@@ -74,6 +74,19 @@ jobs:
           cmake --build build
           cmake --install build
           echo "✅ treeland-protocols built and installed from source"
+
+      - name: Build and Install DDM from source
+        run: |
+          echo "Building ddm from source (PR #106 branch)..."
+          # Use glyvut/ddm fork (master = ddm PR #106 head) which contains DaemonMessages::ShowGreeter
+          git clone --depth=1 https://github.com/glyvut/ddm.git /tmp/ddm
+          cd /tmp/ddm
+          cmake -B build \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          cmake --install build
+          echo "✅ ddm built and installed from source (PR #106)"
 
       - uses: actions/checkout@v4
         with:
