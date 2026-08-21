@@ -352,9 +352,9 @@ void ShellHandler::createPrelaunchSplash(const QString &appId,
 
         // Splash closed without matching a real window — record mismatch
         if (m_windowConfigStore) {
-            m_windowConfigStore->recordSplashMismatch(
-                appId,
-                static_cast<int>(Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount()));
+            const int maxMismatch = static_cast<int>(
+                Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount());
+            m_windowConfigStore->recordSplashMismatch(appId, maxMismatch);
         }
     });
 
@@ -376,9 +376,9 @@ void ShellHandler::createPrelaunchSplash(const QString &appId,
                                const QString mismatchAppId = wrapper->appId();
                                m_rootSurfaceContainer->destroyForSurface(wrapper);
                                if (m_windowConfigStore) {
-                                   m_windowConfigStore->recordSplashMismatch(
-                                       mismatchAppId,
-                                       static_cast<int>(Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount()));
+                                   const int maxMismatch = static_cast<int>(
+                                       Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount());
+                                   m_windowConfigStore->recordSplashMismatch(mismatchAppId, maxMismatch);
                                }
                            });
     }
@@ -400,9 +400,9 @@ void ShellHandler::handlePrelaunchSplashClosed(const QString &appId, const QStri
             m_prelaunchWrappers.removeAt(i);
             m_rootSurfaceContainer->destroyForSurface(wrapper);
             if (m_windowConfigStore) {
-                m_windowConfigStore->recordSplashMismatch(
-                    appId,
-                    static_cast<int>(Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount()));
+                const int maxMismatch = static_cast<int>(
+                    Helper::instance()->globalConfig()->prelaunchSplashMaxMismatchCount());
+                m_windowConfigStore->recordSplashMismatch(appId, maxMismatch);
             }
             return;
         }
