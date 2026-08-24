@@ -78,16 +78,19 @@ class WToplevelSurface;
 class WXdgDecorationManager;
 class WXdgOutputManager;
 class WXWayland;
+class WPointerConstraintsV1;
 
 class WForeignToplevel;
 class WExtForeignToplevelListV1;
 class WOutputManagerV1;
 class WLayerSurface;
+class WRelativePointerManagerV1;
 class WSessionLockManager;
 class WSessionLock;
 WAYLIB_SERVER_END_NAMESPACE
 
 class SeatsManager;
+class PointerConstraintsManager;
 
 WAYLIB_SERVER_USE_NAMESPACE
 
@@ -210,6 +213,7 @@ public:
     Q_INVOKABLE bool isLaunchpad(WLayerSurface *surface) const;
     Q_INVOKABLE void setLaunchpadMapped(WOutput *output, bool mapped);
     Q_INVOKABLE void showDesktop(WOutput *output);
+    Q_INVOKABLE void cancelShowDesktop(SurfaceWrapper *excludeSurface = nullptr);
     Q_INVOKABLE void startLockscreen(WOutput *output, bool showAnimation);
     Q_INVOKABLE QString currentWorkspaceWallpaper(WOutput *output);
     Q_INVOKABLE QString currentLockScreenWallpaper(WOutput *output);
@@ -325,6 +329,7 @@ private:
     void handleNewForeignToplevelCaptureRequest(wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request);
     void onExtSessionLock(WSessionLock *lock);
 private:
+    friend class PointerConstraintsManager;
     friend class SessionManager;
     friend class WallpaperManager;
     friend class WallpaperItem;
@@ -452,6 +457,9 @@ private:
     WXdgToplevelTagManagerV1 *m_xdgToplevelTagManagerV1 = nullptr;
     WForeignToplevel *m_foreignToplevel = nullptr;
     WExtForeignToplevelListV1 *m_extForeignToplevelListV1 = nullptr;
+    WRelativePointerManagerV1 *m_relativePointerManager = nullptr;
+    WPointerConstraintsV1 *m_pointerConstraintsV1 = nullptr;
+    PointerConstraintsManager *m_pointerConstraintsManager = nullptr;
     ShortcutManagerV2 *m_shortcutManager = nullptr;
     PersonalizationManagerInterfaceV1 *m_personalizationInterfaceV1 = nullptr;
     WallpaperColorInterfaceV1 *m_wallpaperColorV1 = nullptr;

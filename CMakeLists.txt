@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25.0)
 
 project(Treeland
-    VERSION 0.8.18
+    VERSION 0.9.0
     LANGUAGES CXX C)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -50,6 +50,9 @@ endif()
 if (NOT EXT_SESSION_LOCK_V1 AND DISABLE_DDM)
     message(WARNING "no ext-session-lock support and no DDM, treeland will not have session locking ability.")
 endif()
+
+option(TREELAND_INSTALL_DEV "Install development files (headers, CMake config, pkg-config, .so symlinks)" OFF)
+add_feature_info(treeland_install_dev TREELAND_INSTALL_DEV "Install development files for external consumers")
 
 if (ADDRESS_SANITIZER)
     add_compile_options(-fsanitize=address -fno-optimize-sibling-calls -fno-omit-frame-pointer)

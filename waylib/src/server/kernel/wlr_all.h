@@ -38,9 +38,15 @@
 #undef signals
 #endif
 
+// C99 allows 'static' as an array-size hint in parameter declarations (e.g.
+// float matrix[static 9]), but this is not valid C++ syntax.  Under
+// extern "C" the C++ compiler still parses the declaration, so we must
+// hide the keyword for the duration of the wlroots includes.
+#define static
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 
 #include <wlr/backend.h>
 #include <wlr/backend/drm.h>
@@ -97,9 +103,12 @@ extern "C" {
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_pointer_gestures_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_session_lock_v1.h>
@@ -115,9 +124,11 @@ extern "C" {
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_dialog_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/edges.h>
 #include <wlr/util/log.h>
+#include <wlr/util/region.h>
 #include <wlr/xcursor.h>
 
 // "namespace" is a C++ keyword; wlr_layer_surface_v1 uses it as a field name.
@@ -159,6 +170,8 @@ size_t waylib_buffer_get_count(void);
 #ifdef __cplusplus
 }
 #endif
+#undef static
+
 
 #ifdef WLRINC_HAD_SLOTS_MACRO
 #define slots Q_SLOTS

@@ -137,6 +137,7 @@ qt_add_qml_module(libtreeland
         core/imcandidatepanelmanager.h
         core/shellhandler.cpp
         core/shellhandler.h
+        core/treelandinit.cpp
         core/treeland.cpp
         core/treeland.h
         core/windowpicker.cpp
@@ -181,6 +182,8 @@ qt_add_qml_module(libtreeland
         output/outputmanager.h
         seat/helper.cpp
         seat/helper.h
+        seat/pointerconstraintsmanager.cpp
+        seat/pointerconstraintsmanager.h
         seat/seatsmanager.cpp
         seat/seatsmanager.h
         session/session.cpp
@@ -205,6 +208,8 @@ qt_add_qml_module(libtreeland
         utils/loginddbustypes.cpp
         utils/fpsdisplaymanager.cpp
         utils/fpsdisplaymanager.h
+        utils/scriptrunner.cpp
+        utils/scriptrunner.h
         wallpaper/wallpapersurface.h
         wallpaper/wallpapersurface.cpp
         wallpaper/wallpaperitem.cpp
@@ -386,6 +391,7 @@ target_link_libraries(libtreeland
         Dtk6::SystemSettings
         Waylib::WaylibServer
     PRIVATE
+        Qt6::GuiPrivate
         Qt6::Quick
         Qt6::QuickControls2
         Qt6::QuickPrivate
@@ -427,7 +433,16 @@ target_link_libraries(${BIN_NAME} PRIVATE
 
 install(TARGETS ${BIN_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS treeland.sh DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(TARGETS libtreeland LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(TARGETS libtreeland
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    NAMELINK_SKIP
+)
+if(TREELAND_INSTALL_DEV)
+    install(TARGETS libtreeland
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        NAMELINK_ONLY
+    )
+endif()
 
 ## systemd socket
 

@@ -1,20 +1,10 @@
-// Copyright (c) 2017, 2018 Drew DeVault
-// Copyright (c) 2014 Jari Vetoniemi
-// Copyright (c) 2023 The wlroots contributors
-// SPDX-License-Identifier: MIT
-
 #include <assert.h>
 #include <stdlib.h>
 #include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
-#include "ext_foreign_toplevel_image_capture_source_manager_v1.h"
 #include "ext-image-capture-source-v1-protocol.h"
 
 #define FOREIGN_TOPLEVEL_IMAGE_SOURCE_MANAGER_V1_VERSION 1
-
-struct wlr_ext_foreign_toplevel_image_capture_source_v1 {
-	struct wlr_ext_image_capture_source_v1 base;
-};
 
 static const struct ext_foreign_toplevel_image_capture_source_manager_v1_interface foreign_toplevel_manager_impl;
 
@@ -44,21 +34,16 @@ static void foreign_toplevel_manager_handle_create_source(struct wl_client *clie
 		return;
 	}
 
-	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request =
-		calloc(1, sizeof(*request));
-	if (request == NULL) {
-		wl_resource_post_no_memory(manager_resource);
-		return;
-	}
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request request = {
+		.toplevel_handle = toplevel_handle,
+		.client = client,
+		.new_id = new_id,
+	};
 
-	request->toplevel_handle = toplevel_handle;
-	request->client = client;
-	request->new_id = new_id;
-
-	wl_signal_emit_mutable(&manager->events.new_request, request);
+	wl_signal_emit_mutable(&manager->events.new_request, &request);
 }
 
-static void foreign_toplevel_manager_handle_destroy(struct wl_client *,
+static void foreign_toplevel_manager_handle_destroy(struct wl_client *client,
 		struct wl_resource *manager_resource) {
 	wl_resource_destroy(manager_resource);
 }
@@ -81,7 +66,7 @@ static void foreign_toplevel_manager_bind(struct wl_client *client, void *data,
 	wl_resource_set_implementation(resource, &foreign_toplevel_manager_impl, manager, NULL);
 }
 
-static void foreign_toplevel_manager_handle_display_destroy(struct wl_listener *listener, void *) {
+static void foreign_toplevel_manager_handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *manager =
 		wl_container_of(listener, manager, display_destroy);
 	wl_signal_emit_mutable(&manager->events.destroy, NULL);

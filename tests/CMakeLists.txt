@@ -1,5 +1,6 @@
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOMOC ON)
+add_subdirectory(protocols)
 
 add_subdirectory(test_protocol_personalization)
 add_subdirectory(test_protocol_primary-output)
@@ -8,4 +9,5 @@ add_subdirectory(test_protocol_virtual-output)
 add_subdirectory(test_protocol_wallpaper-color)
 add_subdirectory(test_protocol_window-management)
 add_subdirectory(test_protocol_prelaunch-splash)
+add_subdirectory(test_protocol_pointerconstraints)
 add_subdirectory(test_effect_glass)

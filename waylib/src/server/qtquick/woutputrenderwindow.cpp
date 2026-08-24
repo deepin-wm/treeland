@@ -1369,10 +1369,8 @@ bool WOutputRenderWindowPrivate::initRCWithRhi()
         auto dev = wlr_vk_renderer_get_device(m_renderer);
         auto queue_family = wlr_vk_renderer_get_queue_family(m_renderer);
 
-#if QT_VERSION > QT_VERSION_CHECK(6, 6, 0)
         auto instance = wlr_vk_renderer_get_instance(m_renderer);
         vkInstance->setVkInstance(instance);
-#endif
         //        vkInstance->setExtensions(fromCStyleList(vkRendererAttribs.extension_count, vkRendererAttribs.extensions));
         //        vkInstance->setLayers(fromCStyleList(vkRendererAttribs.layer_count, vkRendererAttribs.layers));
         vkInstance->setApiVersion({1, 1, 0});
@@ -1584,9 +1582,12 @@ void WOutputRenderWindowPrivate::doRender(wlr_output *needsFrameOutput,
         committedOutputs.reserve(needsCommit.size());
         for (auto i : std::as_const(needsCommit)) {
             if (Q_UNLIKELY(!i.first->framePending())) {
+                auto output = i.first->outputViewport()->output();
+                // Let consumers sample wp_presentation_time feedback (and other
+                // last-minute per-output work) before the output state is committed.
+                Q_EMIT q->outputAboutToCommit(output);
                 if (Q_LIKELY(i.first->commit(i.second))) {
                     // Make sure the output is still valid after commit
-                    auto output = i.first->outputViewport()->output();
                     if (Q_LIKELY(needsFrameOutput)) {
                         Q_ASSERT(output->handle() == needsFrameOutput);
                         if (committedOutputs.isEmpty())
