@@ -75,7 +75,7 @@ xdg-shell 由共享 xdg-toplevel 夹具覆盖（多个 toplevel 测试复用）�
 | [wayland-xdg-dialog-v1](wayland-xdg-dialog-v1/README.md) | E | 回读真实 `SurfaceWrapper::modal()` 在 `set_modal` 后由 false 翻转为 true |
 | [wayland-xdg-foreign-unstable-v2](wayland-xdg-foreign-unstable-v2/README.md) | P | `export_toplevel` 收到非空 `handle`；`import_toplevel` 返回 imported |
 | [wayland-xdg-output-unstable-v1](wayland-xdg-output-unstable-v1/README.md) | E | 客户端 `logical_position`/`logical_size` 事件与回读的真实 `WOutput::position()`/`effectiveSize()` 逐字段一致 |
-| [wayland-xdg-toplevel-tag-v1](wayland-xdg-toplevel-tag-v1/README.md) | P | 真实 toplevel 上 `set_toplevel_tag`/`set_toplevel_description` 被接受 |
+| [wayland-xdg-toplevel-tag-v1](wayland-xdg-toplevel-tag-v1/README.md) | E | 回读真实 `WXdgToplevelSurface::tag()` 等于客户端设置值 |
 
 ## XML request / event / 业务链路盘点
 
