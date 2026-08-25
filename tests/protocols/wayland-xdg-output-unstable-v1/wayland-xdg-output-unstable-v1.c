@@ -3,11 +3,17 @@
 //
 // Test the zxdg_output_manager_v1 global that Treeland serves through its
 // WXdgOutputManager wrapper.  The test binds the first wl_output, obtains an
-// xdg_output for it, and asserts that logical_position, logical_size, and
-// done events are delivered.  (The headless fixture may create multiple
-// outputs with different resolutions, so we only assert non-zero size.)
+// xdg_output for it, and receives logical_position / logical_size / done.
+//
+// Coverage level E (end-to-end): instead of asserting hard-coded numbers, the
+// client reads the *real* headless WOutput's layout geometry back over the
+// server bridge (WOutput::position() / WOutput::effectiveSize(), which read the
+// exact wlroots state WXdgOutputManager uses) and verifies the protocol events
+// match the live production output object.
 
+#include "wayland-xdg-output-unstable-v1.h"
 #include "client-connection.h"
+#include "server-bridge-api.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 
 #include <stdio.h>
@@ -110,18 +116,36 @@ int protocol_test_run(const char *socket_name)
 
     wl_display_roundtrip(conn.display);
 
+    // E-level: read the real headless WOutput's geometry on the compositor
+    // thread and cross-check it against the protocol events just received.
+    struct xdg_output_server_state server;
+    memset(&server, 0, sizeof(server));
+    if (invoke_on_server_thread(xdg_output_read_server_state, &server) == 0) {
+        fprintf(stderr, "xdg-output: failed to read server output state\n");
+        zxdg_output_v1_destroy(xdg_output);
+        zxdg_output_manager_v1_destroy(manager);
+        client_disconnect(&conn);
+        return 1;
+    }
+
     int failed = 0;
     if (!state.done) {
         fprintf(stderr, "xdg-output: no done event received\n");
         failed = 1;
-    } else if (!state.has_position || state.x != 0 || state.y != 0) {
-        fprintf(stderr, "xdg-output: expected logical_position 0,0 got %d,%d\n",
-                state.x, state.y);
+    } else if (!server.valid) {
+        fprintf(stderr, "xdg-output: no real WOutput found in the layout\n");
         failed = 1;
-    } else if (!state.has_size || state.width == 0 || state.height == 0) {
+    } else if (!state.has_position
+               || state.x != server.x || state.y != server.y) {
         fprintf(stderr,
-                "xdg-output: expected non-zero logical_size got %dx%d\n",
-                state.width, state.height);
+                "xdg-output: logical_position %d,%d != real WOutput %d,%d\n",
+                state.x, state.y, server.x, server.y);
+        failed = 1;
+    } else if (!state.has_size
+               || state.width != server.width || state.height != server.height) {
+        fprintf(stderr,
+                "xdg-output: logical_size %dx%d != real WOutput %dx%d\n",
+                state.width, state.height, server.width, server.height);
         failed = 1;
     }
 
