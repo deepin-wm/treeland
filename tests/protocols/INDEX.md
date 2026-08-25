@@ -132,22 +132,23 @@ request stub 算作 request 覆盖；生成的 client-protocol 文件本身不�
 
 ### 标准 wayland-protocols 覆盖
 
-以下 24 个标准 wayland-protocols（wayland-protocols 1.49.0-1）测试均为 **P 级**，覆盖范围
-为绑定全局、创建资源、发送请求并断言事件/版本/错误。它们不纳入上方 treeland-protocols 的
-185 条 request 分母。按断言强度分为两类：
+以下 24 个标准 wayland-protocols（wayland-protocols 1.49.0-1）测试中，`xdg-output`、
+`xdg-dialog`、`xdg-toplevel-tag` 3 个已升至 **E 级**（见上表，回读真实生产对象断言），
+其余 21 个仍为 **P 级**，覆盖范围为绑定全局、创建资源、发送请求并断言事件/版本/错误。
+它们不纳入上方 treeland-protocols 的 185 条 request 分母。按断言强度分为两类：
 
-- **事件断言型（10 个）**——验证真实事件负载到达：
-  `xdg-output-unstable-v1`（logical_position/size/done）、`xdg-activation-v1`（done+token）、
+- **事件断言型（9 个）**——验证真实事件负载到达：
+  `xdg-activation-v1`（done+token）、
   `ext-foreign-toplevel-list-v1`（finished after stop）、`xdg-foreign-unstable-v2`（handle 事件）、
   `ext-data-control-v1`（selection）、
   `ext-idle-notify-v1`（idled）、`xdg-decoration-unstable-v1`
   （configure）、`fractional-scale-v1`（preferred_scale）、`ext-session-lock-v1`（locked/finished）、
   `security-context-v1`（第二连接枚举全局）。
-- **资源创建型（14 个）**——验证真实生产资源创建与请求被接受（含接口本身无事件的情况）：
+- **资源创建型（12 个）**——验证真实生产资源创建与请求被接受（含接口本身无事件的情况）：
   `viewporter`、`alpha-modifier-v1`、`single-pixel-buffer-v1`、`cursor-shape-v1`、
   `relative-pointer-unstable-v1`、`pointer-gestures-unstable-v1`、`pointer-constraints-unstable-v1`、
   `idle-inhibit-unstable-v1`、
-  `text-input-unstable-v1`、`text-input-unstable-v3`、`xdg-dialog-v1`、`xdg-toplevel-tag-v1`、
+  `text-input-unstable-v1`、`text-input-unstable-v3`、
   `ext-image-copy-capture-v1`、`primary-selection-unstable-v1`。
 
 `cursor-shape`/`relative-pointer`/`pointer-gestures`/`pointer-constraints` 四个测试需要 seat 指针能力，
