@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -211,7 +212,35 @@ protected:
         QMainWindow::keyPressEvent(event);
     }
 
+    void resizeEvent(QResizeEvent *event) override
+    {
+        // The image widget is centered in the layout, so resizing the main
+        // window moves it. Re-commit the persistent rect(s) with the updated
+        // geometry so the open/close animation follows the new position.
+        updateRectGeometries();
+        QMainWindow::resizeEvent(event);
+    }
+
 private:
+    // Geometry (relative to this sender surface) of the image widget that is
+    // the source of the window animation.
+    QRect animationRect() const
+    {
+        const QPoint imagePos = m_imageWidget->mapTo(this, QPoint(0, 0));
+        return QRect(imagePos, m_imageWidget->size());
+    }
+
+    void updateRectGeometries()
+    {
+        if (m_rects.isEmpty())
+            return;
+        const QRect rect = animationRect();
+        for (auto *r : std::as_const(m_rects)) {
+            r->set_geometry(rect.x(), rect.y(), rect.width(), rect.height());
+            r->commit();
+        }
+    }
+
     void launchReceiver()
     {
         if (!m_actMgr || !m_actMgr->isInitialized()) {
@@ -254,7 +283,7 @@ private:
         //    closes. Destroying the rect (or disconnecting) makes the
         //    compositor fall back to the default close animation.
         if (m_animMgr && m_animMgr->isInitialized()) {
-            QPoint imagePos = m_imageWidget->mapTo(this, QPoint(0, 0));
+            const QRect rectGeo = animationRect();
             auto *rawRect = m_animMgr->get_window_animation_rect(rawToken);
             if (rawRect) {
                 // Each launched receiver gets its own persistent rect. The
@@ -263,7 +292,7 @@ private:
                 // destroy a previous rect here: doing so clears the close
                 // animation of a still-open earlier receiver.
                 auto *rect = new WindowAnimationRect(rawRect, this);
-                rect->set_geometry(imagePos.x(), imagePos.y(), 200, 200);
+                rect->set_geometry(rectGeo.x(), rectGeo.y(), rectGeo.width(), rectGeo.height());
                 rect->commit();
                 m_rects.append(rect);
             }
