@@ -19,6 +19,9 @@
 #include <QWidget>
 #include <QtWaylandClient/QWaylandClientExtension>
 
+#include <QList>
+#include <utility>
+
 #include <cstdlib>
 
 // ---------------------------------------------------------------------------
@@ -192,12 +195,12 @@ public:
 
     ~SenderWindow() override
     {
-        // Destroy any remaining rect objects so the compositor falls back
-        // to the default close animation for the receiver.
-        if (m_rect) {
-            m_rect->destroy();
-            m_rect = nullptr;
+        // Destroy all rect objects so the compositor falls back
+        // to the default close animation once sender is gone.
+        for (auto *rect : std::as_const(m_rects)) {
+            rect->destroy();
         }
+        m_rects.clear();
     }
 
 protected:
@@ -254,18 +257,15 @@ private:
             QPoint imagePos = m_imageWidget->mapTo(this, QPoint(0, 0));
             auto *rawRect = m_animMgr->get_window_animation_rect(rawToken);
             if (rawRect) {
-                // Destroy any previous rect before creating a new one.
-                if (m_rect) {
-                    m_rect->destroy();
-                    m_rect = nullptr;
-                }
-                m_rect = new WindowAnimationRect(rawRect, this);
-                m_rect->set_geometry(imagePos.x(), imagePos.y(), 200, 200);
-                m_rect->commit();
-                // NOTE: The rect is NOT destroyed here. It stays alive so the
-                // compositor can use it for the close animation when B's
-                // window is closed. The rect will be destroyed when this
-                // sender window is closed (see destructor).
+                // Each launched receiver gets its own persistent rect. The
+                // rect stays alive (associated with that receiver's window)
+                // so it can drive that window's close animation. We must NOT
+                // destroy a previous rect here: doing so clears the close
+                // animation of a still-open earlier receiver.
+                auto *rect = new WindowAnimationRect(rawRect, this);
+                rect->set_geometry(imagePos.x(), imagePos.y(), 200, 200);
+                rect->commit();
+                m_rects.append(rect);
             }
         }
 
@@ -275,7 +275,7 @@ private:
 
     XdgActivationManager *m_actMgr;
     WindowAnimationManager *m_animMgr;
-    WindowAnimationRect *m_rect = nullptr;
+    QList<WindowAnimationRect *> m_rects;
     QPixmap m_image;
     QWidget *m_imageWidget = nullptr;
 };
