@@ -101,6 +101,18 @@ public:
         , QtWayland::treeland_window_animation_rect_v1(obj)
     {
     }
+
+protected:
+    void treeland_window_animation_rect_v1_closed() override
+    {
+        // The target window this rect is for has been destroyed, so the rect
+        // is no longer needed. Let the owner destroy it so rects for already
+        // closed windows do not accumulate.
+        Q_EMIT closed();
+    }
+
+Q_SIGNALS:
+    void closed();
 };
 
 // ---------------------------------------------------------------------------
@@ -263,6 +275,15 @@ private:
                 // destroy a previous rect here: doing so clears the close
                 // animation of a still-open earlier receiver.
                 auto *rect = new WindowAnimationRect(rawRect, this);
+                // When the compositor reports that the rect's target window
+                // has closed, the rect is useless: destroy it and drop it
+                // from our list.
+                connect(rect, &WindowAnimationRect::closed, this, [this, rect] {
+                    const int idx = m_rects.indexOf(rect);
+                    if (idx >= 0)
+                        m_rects.removeAt(idx);
+                    rect->destroy();
+                });
                 rect->set_geometry(imagePos.x(), imagePos.y(), 200, 200);
                 rect->commit();
                 m_rects.append(rect);
