@@ -60,8 +60,21 @@ public:
     void associate(SurfaceWrapper *targetWrapper, SurfaceWrapper *originWrapper)
     {
         m_targetWrapper = targetWrapper;
-        if (m_targetWrapper)
+        if (m_targetWrapper) {
             m_targetWrapper->setWindowAnimationRect(m_rect, originWrapper);
+
+            // Notify the rect's owner once the target window is destroyed
+            // (the close animation has finished and the window is gone), so
+            // the client can destroy this now-useless rectangle instead of
+            // letting it accumulate until the client disconnects. This class
+            // is not a QObject, so it cannot be used as a connect context;
+            // the connection is therefore stored and explicitly disconnected
+            // in the destructor to avoid a dangling callback if the client
+            // destroys the rectangle before the target window.
+            m_targetDestroyedConnection = QObject::connect(m_targetWrapper.data(),
+                                                           &QObject::destroyed,
+                                                           [this] { send_closed(); });
+        }
     }
 
 protected:
@@ -87,6 +100,7 @@ private:
     QRectF m_rect;
     bool m_committed = false;
     bool m_consumed = false; // set when takeCommittedRect() removes this from the cache
+    QMetaObject::Connection m_targetDestroyedConnection; // dropped in this destructor when the target window closes
     QPointer<SurfaceWrapper> m_targetWrapper;
 };
 
@@ -147,6 +161,11 @@ protected:
 
 WindowAnimationRectV1::~WindowAnimationRectV1()
 {
+    // Drop the target-window destroy callback so it never fires on a dangling
+    // this after the rectangle is destroyed.
+    if (m_targetDestroyedConnection)
+        QObject::disconnect(m_targetDestroyedConnection);
+
     // Notify the target wrapper that the rect is gone, so it falls back to
     // the default close animation.
     if (m_targetWrapper)
