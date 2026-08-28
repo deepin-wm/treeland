@@ -1,0 +1,13 @@
+{
+  "name": "treeland-debug-mcp",
+  "version": "1.0.0",
+  "description": "MCP (Model Context Protocol) server exposing the treeland-debug CLI to AI clients",
+  "type": "module",
+  "bin": {
+    "treeland-debug-mcp": "mcp-server.mjs"
+  },
+  "license": "Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+  "engines": {
+    "node": ">=18"
+  }
+}

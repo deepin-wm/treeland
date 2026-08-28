@@ -67,3 +67,12 @@ install(TARGETS treeland-debug
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT treeland-debug
 )
+
+# MCP (Model Context Protocol) server exposing this CLI to AI clients.
+# Pure Node.js, no runtime deps; installed alongside the client.
+install(FILES
+    mcp/mcp-server.mjs
+    mcp/package.json
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/treeland-debug-mcp"
+    COMPONENT treeland-debug
+)

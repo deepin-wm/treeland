@@ -225,6 +225,69 @@ from `/proc/<pid>/cmdline`). The `windows`/`clients` tables additionally show
 the server-side decoration (`content`/`titlebar`/`frame`) geometry when the
 window is an SSD toplevel.
 
+## MCP (Model Context Protocol) server
+
+`mcp/mcp-server.mjs` is a zero-dependency Node.js MCP server that exposes the
+whole treeland-debug CLI to AI clients (Claude, Codex, …) as MCP **tools**. It
+speaks the standard MCP stdio transport (newline-delimited JSON-RPC 2.0 on
+stdin/stdout) and needs nothing beyond Node.js ≥ 18 — no npm install, no
+network access.
+
+Each tool call maps to a one-shot `treeland-debug <command>` invocation, i.e.
+it reuses the full tested CLI surface and consumes **zero compositor-side
+resources while idle** (same design as the HTTP server). Screenshots are
+returned inline as base64 PNG image blocks instead of paths.
+
+### Running
+
+```bash
+# from the repo (or point TREELAND_DEBUG_BIN at the installed client)
+node tools/treeland-debug/mcp/mcp-server.mjs
+```
+
+Or after install, the server is at
+`${CMAKE_INSTALL_LIBEXECDIR}/treeland-debug-mcp/mcp-server.mjs`.
+
+Environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TREELAND_DEBUG_BIN` | `treeland-debug` | Binary to invoke |
+| `TREELAND_DEBUG_SUDO_USER` | *(unset)* | When set, run via `sudo -u <user> -- <bin>` (e.g. `dde` for a global treeland service) |
+| `TREELAND_DEBUG_URL` | *(unset)* | `--url` for the remote object host |
+| `TREELAND_DEBUG_TIMEOUT_MS` | `30000` | Per-request timeout |
+
+Follow the same identity rule as the CLI: the remote object's local socket is
+owner-only, so the server must run as the same user as treeland (or use
+`TREELAND_DEBUG_SUDO_USER`).
+
+### Tools
+
+Inspection: `tree`, `cursor`, `windows`, `clients`, `focused`, `scene`.
+Window control: `activate`, `close`, `minimize`, `maximize`, `fullscreen`,
+`move`, `resize`, `workspace`. Input: `move_cursor`, `event_motion`,
+`event_button`, `event_key`. Capture: `screenshot_output`, `screenshot_window`
+(screenshots return PNG image content).
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "treeland-debug": {
+      "command": "sudo",
+      "args": ["-u", "dde", "--", "node", "/usr/libexec/treeland-debug-mcp/mcp-server.mjs"]
+    }
+  }
+}
+```
+
+Smoke test (no compositor needed; uses a stub CLI):
+
+```bash
+node tools/treeland-debug/mcp/test-mcp.mjs
+```
+
 ## License
 
 treeland is licensed under Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only.
