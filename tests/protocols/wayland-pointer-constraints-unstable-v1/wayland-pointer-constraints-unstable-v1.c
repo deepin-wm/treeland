@@ -62,6 +62,7 @@ int protocol_test_run(const char *socket_name) {
 
 	if (!(g_caps & 0x1 /* WL_SEAT_CAPABILITY_POINTER */)) {
 		wlr_log(WLR_ERROR, "pointer-constraints: seat has no pointer capability");
+		wl_seat_destroy(seat);
 		client_disconnect(&conn);
 		return 1;
 	}

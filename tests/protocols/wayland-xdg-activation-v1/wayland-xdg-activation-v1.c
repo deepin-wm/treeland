@@ -28,7 +28,7 @@ static void done(void *data, struct xdg_activation_token_v1 *token, const char *
 	(void)token;
 	struct activation_state *state = data;
 	state->done = 1;
-	if (token_string) {
+	if (token_string != NULL) {
 		strncpy(state->token, token_string, sizeof(state->token) - 1);
 		state->token[sizeof(state->token) - 1] = '\0';
 	}

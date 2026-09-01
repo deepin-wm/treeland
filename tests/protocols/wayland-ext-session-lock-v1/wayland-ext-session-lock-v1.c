@@ -100,6 +100,10 @@ int protocol_test_run(const char *socket_name) {
 		 * on client-initiated unlock, so we only flush the request. */
 		ext_session_lock_v1_unlock_and_destroy(lock);
 		wl_display_roundtrip(conn.display);
+	} else {
+		/* Compositor sent `finished` (lock rejected).  Destroy the lock
+		 * proxy explicitly to send the destroy request. */
+		ext_session_lock_v1_destroy(lock);
 	}
 
 	ext_session_lock_manager_v1_destroy(manager);

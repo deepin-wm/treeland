@@ -74,6 +74,7 @@ int protocol_test_run(const char *socket_name) {
 	if (deco == NULL) {
 		wlr_log(WLR_ERROR, "xdg-decoration: get_toplevel_decoration returned NULL");
 		xdg_toplevel_client_destroy(&tc);
+		zxdg_decoration_manager_v1_destroy(manager);
 		client_disconnect(&conn);
 		return 1;
 	}

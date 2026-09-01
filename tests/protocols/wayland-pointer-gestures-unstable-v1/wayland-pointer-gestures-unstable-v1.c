@@ -63,6 +63,7 @@ int protocol_test_run(const char *socket_name) {
 
 	if (!(g_caps & 0x1)) {
 		wlr_log(WLR_ERROR, "pointer-gestures: seat has no pointer capability");
+		wl_seat_destroy(seat);
 		client_disconnect(&conn);
 		return 1;
 	}

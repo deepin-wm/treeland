@@ -73,12 +73,14 @@ int protocol_test_run(const char *socket_name) {
 	struct xdg_toplevel_client tc;
 	if (!xdg_toplevel_client_create_pending(&conn, &tc)) {
 		wlr_log(WLR_ERROR, "ext-foreign-toplevel-list: create_pending failed");
+		ext_foreign_toplevel_list_v1_destroy(list);
 		client_disconnect(&conn);
 		return 1;
 	}
 	if (!xdg_toplevel_client_complete_map(&conn, &tc)) {
 		wlr_log(WLR_ERROR, "ext-foreign-toplevel-list: complete_map failed");
 		xdg_toplevel_client_destroy(&tc);
+		ext_foreign_toplevel_list_v1_destroy(list);
 		client_disconnect(&conn);
 		return 1;
 	}

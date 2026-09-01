@@ -105,7 +105,7 @@ int protocol_test_run(const char *socket_name) {
 		}
 	}
 
-	if (dialog)
+	if (dialog != NULL)
 		xdg_dialog_v1_destroy(dialog);
 	if (manager != NULL)
 		xdg_wm_dialog_v1_destroy(manager);
