@@ -27,6 +27,8 @@
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon.h>
 #include <cstring>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <QBuffer>
 #include <QDateTime>
@@ -35,6 +37,7 @@
 #include <QFutureWatcher>
 #include <QImage>
 #include <QLocalServer>
+#include <QLocalSocket>
 #include <QMetaEnum>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
@@ -182,6 +185,41 @@ int qtKeyToEvdev(int qtKey, wlr_keyboard *keyboard)
     return 0;
 }
 
+#ifndef TREELAND_DEBUG_DEV_BUILD
+// Release-build QLocalServer that enforces root-only access by checking
+// SO_PEERCRED on every incoming connection.  This is the explicit
+// server-side identity gate: non-root processes are rejected here,
+// regardless of socket file permissions.
+class RootOnlyLocalServer : public QLocalServer
+{
+public:
+    explicit RootOnlyLocalServer(QObject *parent = nullptr)
+        : QLocalServer(parent)
+    {
+        setSocketOptions(UserAccessOption);
+    }
+
+protected:
+    void incomingConnection(quintptr socketDescriptor) override
+    {
+        struct ucred cred;
+        socklen_t len = sizeof(cred);
+        if (getsockopt(socketDescriptor, SOL_SOCKET, SO_PEERCRED, &cred, &len) == -1) {
+            qCWarning(lcTlDebug) << "treeland-debug: failed to get peer credentials, rejecting";
+            ::close(socketDescriptor);
+            return;
+        }
+        if (cred.uid != 0) {
+            qCWarning(lcTlDebug) << "treeland-debug: rejected connection from uid" << cred.uid
+                                 << "(release build requires root)";
+            ::close(socketDescriptor);
+            return;
+        }
+        QLocalServer::incomingConnection(socketDescriptor);
+    }
+};
+#endif
+
 } // namespace
 
 TreelandRemoteSource::TreelandRemoteSource(QObject *parent)
@@ -202,13 +240,32 @@ TreelandRemoteSource::TreelandRemoteSource(QObject *parent)
     }
 
     auto *host = new QRemoteObjectHost(this);
-    QRemoteObjectHost::setLocalServerOptions(QLocalServer::UserAccessOption);
-    if (!host->setHostUrl(QUrl(QStringLiteral("local:%1").arg(socketName)))) {
+#ifdef TREELAND_DEBUG_DEV_BUILD
+    // Debug builds: allow all users to connect (requirement: debug builds
+    // are unrestricted).  WorldAccessOption sets the socket to 0666.
+    auto *server = new QLocalServer(host);
+    server->setSocketOptions(QLocalServer::WorldAccessOption);
+#else
+    // Release builds: server-side uid enforcement — only root may connect.
+    // RootOnlyLocalServer checks SO_PEERCRED in incomingConnection() and
+    // rejects non-root processes before they reach the QRemoteObjectHost.
+    auto *server = new RootOnlyLocalServer(host);
+#endif
+    if (!server->listen(socketName)) {
         qCWarning(lcTlDebug) << "Failed to listen on debug socket" << socketName
                              << "; debug remote source disabled";
         m_debugSocketLock.release();
         return;
     }
+    // Forward credential-checked connections to the host.  We use
+    // addHostSideConnection instead of setHostUrl so that our custom
+    // QLocalServer (with its SO_PEERCRED check) is the only entry point.
+    QObject::connect(server, &QLocalServer::newConnection, host, [host, server]() {
+        while (server->hasPendingConnections()) {
+            QLocalSocket *socket = server->nextPendingConnection();
+            host->addHostSideConnection(socket);
+        }
+    });
     host->enableRemoting(this, QStringLiteral("WindowTree"));
 }
 
