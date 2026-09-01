@@ -80,6 +80,7 @@ int protocol_test_run(const char *socket_name) {
 	int failed = 0;
 	if (!state.locked && !state.finished) {
 		wlr_log(WLR_ERROR, "ext-session-lock: no locked or finished event received");
+		ext_session_lock_v1_destroy(lock);
 		failed = 1;
 	} else if (state.locked) {
 		/* E-level: the production WSessionLock must actually be locked. */

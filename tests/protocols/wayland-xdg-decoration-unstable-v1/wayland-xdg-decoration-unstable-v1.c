@@ -84,6 +84,7 @@ int protocol_test_run(const char *socket_name) {
 	if (!xdg_toplevel_client_complete_map(&conn, &tc)) {
 		wlr_log(WLR_ERROR, "xdg-decoration: complete_map failed");
 		zxdg_toplevel_decoration_v1_destroy(deco);
+		zxdg_decoration_manager_v1_destroy(manager);
 		xdg_toplevel_client_destroy(&tc);
 		client_disconnect(&conn);
 		return 1;
