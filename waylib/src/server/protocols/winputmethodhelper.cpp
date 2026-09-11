@@ -179,7 +179,15 @@ public:
             return false;
         }
 
-        setKeyboard(activeKeyboardGrab, device);
+        // Do not call setKeyboard() here. The grab's keyboard is managed by
+        // handleNewKGV2 (initial setup) and the WSeat::keyboardChanged signal.
+        // Calling setKeyboard() on every key event would change the grab's
+        // keyboard (e.g. from the keyboard-group device to a non-IME virtual
+        // keyboard), and wlr_input_method_keyboard_grab_v2_set_keyboard()
+        // unconditionally emits keymap/modifiers/repeat-info on a keyboard
+        // change, producing spurious events that desynchronise the IM client.
+        // filterModifiers() still reconciles the keyboard on the first modifier
+        // event from a different device.
         wlr_input_method_keyboard_grab_v2_send_key(activeKeyboardGrab, timestamp, keycode, state);
         return true;
     }
