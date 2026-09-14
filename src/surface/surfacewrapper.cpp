@@ -28,7 +28,6 @@
 #include <QColor>
 #include <QTimer>
 #include <QVariant>
-#include <QtCore>
 
 #include <memory>
 

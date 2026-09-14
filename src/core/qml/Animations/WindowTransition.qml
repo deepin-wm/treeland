@@ -68,11 +68,7 @@ Item {
         visible: !!root.sourceBuffer
         buffer: root.sourceBuffer
         smooth: true
-        opacity: 0
-
-        Component.onCompleted: {
-            opacity = root.direction === 1 ? 1 : 0;
-        }
+        opacity: root.direction === 1 ? 1 : 0
     }
 
     ParallelAnimation {
