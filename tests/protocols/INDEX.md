@@ -32,7 +32,7 @@ Wayland 线上请求与事件；本文档规定发出请求后，测试必须观
 | [input-manager-unstable-v1](treeland-input-manager-unstable-v1/README.md) | I / E（可选） | 默认空设备 manager 生命周期；uinput 驱动真实 libinput capability 热插拔 |
 | [keyboard-state-notify-unstable-v1](treeland-keyboard-state-notify-unstable-v1/README.md) | P | watcher 配置与空键盘/空 modifier 边界 |
 | [output-manager-v1](treeland-output-manager-v1/README.md) | I / P | 真实 `wl_output` 的 primary-output 链路 |
-| [personalization-manager-v1](treeland-personalization-manager-v1/README.md) | E / I | 个性化状态挂接到真实 wrapper；font/appearance 配置的 setter/getter 生产回读与恢复 |
+| appearance-v1（冒烟测试） | I | appearance/manager 接口创建与名称校验（`tests/test_protocol_appearance`）；无 C-client 协议测试 | 推送事件 payload、setter 请求、DConfig 广播与配置替换 |
 | [prelaunch-splash-v2](treeland-prelaunch-splash-v2/README.md) | I / E | splash 请求/关闭信号；生产 splash wrapper 创建、加入 workspace 与销毁 |
 | [screensaver-v1](treeland-screensaver-v1/README.md) | E / P | 真实 ext-idle 抑制生命周期 |
 | [shortcut-manager-v2](treeland-shortcut-manager-v2/README.md) | E / P | 聚焦窗口捕获与快捷键激活 |
@@ -64,11 +64,11 @@ Wayland 线上请求与事件；本文档规定发出请求后，测试必须观
 request stub 算作 request 覆盖；生成的 client-protocol 文件本身不计入。`destroy` 也单列，
 因为它证明资源生命周期，却通常不承载主要业务语义。
 
-- **已注册并有测试目录的 19 个当前协议**：XML 共 185 条 request，其中测试客户端直接
-  调用了 **144 条（77.8%）**。
-- 去掉 48 条 `destroy` 生命周期 request 后，剩余 137 条工厂、配置和业务 request 中有
-  **100 条（73.0%）** 被直接调用。
-- 19 个协议中 **16 个（84.2%）** 至少有一条 E 级生产业务链路；仅 DDM、output-manager
+- **已注册并有测试目录的 18 个当前协议**：XML 共 148 条 request，其中测试客户端直接
+  调用了 **107 条（72.3%）**。
+- 去掉 47 条 `destroy` 生命周期 request 后，剩余 101 条工厂、配置和业务 request 中有
+  **64 条（63.4%）** 被直接调用。
+- 18 个协议中 **15 个（83.3%）** 至少有一条 E 级生产业务链路；仅 DDM、output-manager
   color-control、wallpaper-color 仍停留在 I/P 层。
 - 当前 XML 共有 95 条 server event。这里**不发布“事件百分比”**：listener 中出现一个
   callback、或 fixture 手工发出一次 event，都不能证明事件负载或其业务来源被断言。下表只
@@ -84,7 +84,6 @@ request stub 算作 request 覆盖；生成的 client-protocol 文件本身不�
 | input-manager-unstable-v1 | 1 / 22 | 默认测试仅证明空设备 manager 可绑定；uinput target 断言 Keyboard capability 热插拔 | settings/apply、真实 mouse/touchpad 配置生效、无设备 failed；uinput E 层需显式启用并实际执行 |
 | keyboard-state-notify-unstable-v1 | 6 / 6 | watcher 配置、`apply` 的空键盘/空 modifier 边界 | `current_state/state_changed`、多 watcher、初始 locked、seat 销毁、重复 apply 与物理键盘对照 |
 | output-manager-v1 | 4 / 7 | `primary_output`；未知 output 的 color-control 错误 | `set_color_temperature/set_brightness/commit` 成功路径及 `result/color_temperature/brightness`，真实 output/像素变化 |
-| personalization-manager-v1 | 37 / 37* | cursor/font/appearance 回读 event；真实 wrapper 个性化状态 | manager `destroy` 为 v2 request（v1 global 只能走错误/兼容性边界）；字体渲染和 appearance 的最终 UI 像素 |
 | prelaunch-splash-v2 | 3 / 3 | 创建、关闭；真实 splash wrapper 加入/离开 workspace | splash QML 最终可见性、纹理和像素 |
 | screensaver-v1 | 2 / 3 | 真实 ext-idle 被 inhibit/uninhibit 改变 | 显式 `destroy` request、实际锁屏 UI |
 | shortcut-manager-v2 | 6 / 9 | `commit_success`、`captured`、`activated`；真实 virtual keyboard 输入链 | swipe、hold、`unbind`、`commit_failure` 的业务分支；物理键盘 |
@@ -96,16 +95,16 @@ request stub 算作 request 覆盖；生成的 client-protocol 文件本身不�
 | wine-window-management-unstable-v1 | 5 / 5 | `window_id/configure_position/configure_stacking`；真实 QQuickItem 位置/Z 值 | bottom/insert-after、多窗口 sibling、无效 sibling、重复 bind、越界坐标 |
 | wine-window-state-unstable-v1 | 6 / 7 | `state_changed`；真实最小化、attention 与可见性 | `activate/activate_denied`、重复 bind、toplevel 销毁后的 inert 状态 |
 
-\* XML 共有 37 条 request；其中 manager `destroy` 的 `since=2` 高于生产 global 的 v1。
-测试保留该调用用于兼容性/错误边界，正常可发布的 v1 request 集为其余 36 条。
-
 ### 未纳入上述覆盖率的 XML
 
-以下 3 个 XML 仍由协议包提供，但当前没有对应的已注册生产测试 target，故不混入 185 的
+以下 5 个 XML 仍由协议包提供，但当前没有对应的已注册生产测试 target，故不混入 148 的
 分母，也不能被视为“已覆盖”：
 
 | XML | request / event | 当前状态与缺口 |
 | --- | --- | --- |
+| `treeland-appearance-unstable-v1` | — | 新增 0.6.0 协议；仅有冒烟测试（接口创建/名称校验），无 C-client 覆盖 |
+| `treeland-appearance-manager-unstable-v1` | — | 新增 0.6.0 协议；仅有冒烟测试，无 C-client 覆盖 |
+| `treeland-decoration-unstable-v1` | — | 0.6.0 新增协议；生产实现尚未注册，无测试 |
 | `treeland-prelaunch-splash-v1` | 2 / 0 | 已由 v2 取代；未验证 v1 compatibility global 或迁移策略 |
 | `treeland-shortcut-manager-v1` | 3 / 1 | 已由 v2 取代；未验证 v1 compatibility global、`shortcut` event |
 | `treeland-remote-subsurface-unstable-v1` | 8 / 3 | 无测试目录；export token、remote subsurface 创建、位置/堆叠、错误 event 与真实 scene 结果均未覆盖 |

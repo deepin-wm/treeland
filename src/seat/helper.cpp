@@ -44,6 +44,8 @@
 #include "modules/keyboard-state-notify/keyboardstatenotifymanagerinterfacev1.h"
 #include "modules/output-manager/outputmanagement.h"
 #include "modules/personalization/personalizationmanagerinterfacev1.h"
+#include "modules/appearance/appearanceinterfacev1.h"
+#include "modules/appearance/appearancemanagerinterfacev1.h"
 #include "modules/resource/treelandremotesource.h"
 #include "modules/screensaver/screensaverinterfacev2.h"
 #include "modules/shortcut/shortcutcontroller.h"
@@ -1949,6 +1951,10 @@ void Helper::init(Treeland::Treeland *treeland)
             }
         });
     m_personalizationInterfaceV1 = m_server->attach<PersonalizationManagerInterfaceV1>();
+
+    // New protocols (treeland-protocols 0.6.0)
+    m_appearanceInterfaceV1 = m_server->attach<AppearanceInterfaceV1>();
+    m_appearanceManagerInterfaceV1 = m_server->attach<AppearanceManagerInterfaceV1>();
 
     auto updateCurrentUser = [this] {
         m_config.reset(TreelandUserConfig::createByName("org.deepin.dde.treeland.user",

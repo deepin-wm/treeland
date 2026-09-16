@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 
 #include "personalizationmanagerinterfacev1.h"
+
+// DEPRECATED: This module is frozen. Use treeland-appearance-unstable-v1 and
+// treeland-appearance-manager-unstable-v1 (src/modules/appearance/) instead.
+// No new features will be added to this protocol.
 #include "surfacewrapper.h"
 
 #include "qwayland-server-treeland-personalization-manager-v1.h"
