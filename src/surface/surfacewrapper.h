@@ -50,6 +50,14 @@ class SurfaceWrapper : public QQuickItem
     Q_PROPERTY(State previousSurfaceState READ previousSurfaceState NOTIFY previousSurfaceStateChanged FINAL)
     Q_PROPERTY(State surfaceState READ surfaceState NOTIFY surfaceStateChanged BINDABLE bindableSurfaceState FINAL)
     Q_PROPERTY(qreal radius READ radius NOTIFY radiusChanged FINAL)
+    Q_PROPERTY(qreal shadowBlurRadius READ shadowBlurRadius NOTIFY shadowChanged FINAL)
+    Q_PROPERTY(qreal shadowOffsetX READ shadowOffsetX NOTIFY shadowChanged FINAL)
+    Q_PROPERTY(qreal shadowOffsetY READ shadowOffsetY NOTIFY shadowChanged FINAL)
+    Q_PROPERTY(QColor shadowColor READ shadowColor NOTIFY shadowChanged FINAL)
+    Q_PROPERTY(bool shadowVisible READ shadowVisible NOTIFY shadowChanged FINAL)
+    Q_PROPERTY(qreal borderWidth READ borderWidth NOTIFY borderChanged FINAL)
+    Q_PROPERTY(QColor borderColor READ borderColor NOTIFY borderChanged FINAL)
+    Q_PROPERTY(bool borderVisible READ borderVisible NOTIFY borderChanged FINAL)
     Q_PROPERTY(SurfaceContainer* container READ container NOTIFY containerChanged FINAL)
     Q_PROPERTY(QQuickItem* titleBar READ titleBar NOTIFY noTitleBarChanged FINAL)
     Q_PROPERTY(QQuickItem* decoration READ decoration NOTIFY noDecorationChanged FINAL)
@@ -81,6 +89,7 @@ class SurfaceWrapper : public QQuickItem
     Q_PROPERTY(bool isResizable READ isResizable NOTIFY resizableChanged FINAL)
     Q_PROPERTY(bool isMaximizable READ isMaximizable NOTIFY maximizableChanged FINAL)
     Q_PROPERTY(bool modal READ modal NOTIFY modalChanged FINAL)
+    Q_PROPERTY(bool minimized READ isMinimized NOTIFY minimizedChanged FINAL)
 
 public:
     enum class Type
@@ -99,11 +108,24 @@ public:
     {
         Normal,
         Maximized,
-        Minimized,
         Fullscreen,
         Tiling,
     };
     Q_ENUM(State)
+
+    // Quick-tile direction; None means "no tiling" (i.e. Normal state).
+    enum class TileMode
+    {
+        None,
+        Left,
+        Right,
+        Maximize,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+    };
+    Q_ENUM(TileMode)
 
     enum class ActiveControlState : quint16
     {
@@ -209,8 +231,30 @@ public:
     bool isAnimationRunning() const;
     bool isWindowAnimationRunning() const;
 
+    void applyTileMode(TileMode mode, Output *output);
+    // Instantly restore `this` to Normal
+    void cancelTileMode();
+
     qreal radius() const;
     void setRadius(qreal newRadius);
+
+    // Per-window SSD customization (treeland-decoration-unstable-v1).
+    // Values equal to the compositor defaults (set by Helper when no
+    // per-window override is active) so the rendering picks them up via
+    // Decoration.qml without extra conditionals.
+    qreal shadowBlurRadius() const;
+    qreal shadowOffsetX() const;
+    qreal shadowOffsetY() const;
+    QColor shadowColor() const;
+    bool shadowVisible() const;
+    void setShadowValues(qreal blur, qreal offsetX, qreal offsetY, const QColor &color);
+    void setShadowVisible(bool visible);
+
+    qreal borderWidth() const;
+    QColor borderColor() const;
+    bool borderVisible() const;
+    void setBorderValues(qreal width, const QColor &color);
+    void setBorderVisible(bool visible);
 
     SurfaceContainer *container() const;
 
@@ -248,6 +292,7 @@ public:
     bool alwaysOnTop() const;
     bool effectiveAlwaysOnTop() const;
     void setAlwaysOnTop(bool alwaysOnTop);
+    void setAlwaysOnBottom(bool alwaysOnBottom);
 
     bool showOnAllWorkspace() const;
     bool showOnWorkspace(int workspaceIndex) const;
@@ -295,6 +340,7 @@ public:
     void setHideByLockScreen(bool hide);
 
     void destroy();
+    bool isAboutToRemove() const;
 
     bool acceptKeyboardFocus() const; // set by treeland-dde-shell
     void setAcceptKeyboardFocus(bool accept);
@@ -303,6 +349,8 @@ public:
     bool isIMCandidatePanel() const;
     void setIMCandidatePanel(bool isIMCandidatePanel);
     bool isInputPopupLike() const;
+    bool isLaunchpad() const;
+    bool isQuickLaunchpad() const;
 
     bool attention() const;
     bool setAttention(bool attention);
@@ -313,7 +361,7 @@ public Q_SLOTS:
     void maximize();
     void unmaximize();
     void toggleMaximized();
-    void enterFullscreen();
+    void enterFullscreen(WOutput *targetOutput = nullptr);
     void leaveFullscreen();
     void closeSurface();
     void onMappedChanged();
@@ -338,7 +386,10 @@ Q_SIGNALS:
     void positionAutomaticChanged();
     void previousSurfaceStateChanged();
     void surfaceStateChanged();
+    void minimizedChanged();
     void radiusChanged();
+    void shadowChanged();
+    void borderChanged();
     void moveRequested();
     void resizeRequested(Qt::Edges edges);
     void windowMenuRequested(QPointF pos);
@@ -402,6 +453,7 @@ private:
     void updateBoundingRect();
     void updateVisible();
     void updateSubSurfaceStacking();
+    void restackWindowAnimationAbove();
     void ensureAboveParent();
     void updateClipRect();
     void geometryChange(const QRectF &newGeo, const QRectF &oldGeometry) override;
@@ -410,8 +462,10 @@ private:
 
     QRectF targetGeometryForState(State state) const;
     bool applySurfaceStateGeometry(State state, const QRectF &targetGeometry);
-    bool checkSetSurfaceState(State);
+    bool checkSetSurfaceState(State newSurfaceState, bool allowRetarget = false);
+    bool shouldUpdateNormalGeometry() const;
     void abortGeometryAnimation();
+    void applySurfaceStateWithoutGeometry(State state);
     void doSetSurfaceState(State newSurfaceState);
     Q_SLOT void onAnimationReady();
     Q_SLOT void onAnimationFinished();
@@ -423,7 +477,8 @@ private:
     void onWindowAnimationFinished();
     Q_SLOT void onShowAnimationFinished();
     Q_SLOT void onHideAnimationFinished();
-    void updateExplicitAlwaysOnTop();
+    void updateStackingLayer();
+    void updateXWaylandStackingState();
     void updateSizeCapabilities();
     void setModal(bool modal);
     void startMinimizeAnimation(const QRectF &iconGeometry, uint direction);
@@ -467,6 +522,7 @@ private:
     QPointer<QQuickItem> m_windowAnimation;
     QPointer<QQuickItem> m_minimizeAnimation;
     QPointer<QQuickItem> m_showDesktopAnimation;
+    QMetaObject::Connection m_xdgToplevelCommitConnection;
     Q_OBJECT_BINDABLE_PROPERTY_WITH_ARGS(SurfaceWrapper,
                                          SurfaceWrapper::State,
                                          m_previousSurfaceState,
@@ -477,9 +533,26 @@ private:
                                          m_surfaceState,
                                          State::Normal,
                                          &SurfaceWrapper::surfaceStateChanged)
+    Q_OBJECT_BINDABLE_PROPERTY_WITH_ARGS(SurfaceWrapper,
+                                         bool,
+                                         m_minimized,
+                                         false,
+                                         &SurfaceWrapper::minimizedChanged)
     int m_workspaceId = -1;
     int m_explicitAlwaysOnTop = 0;
+    bool m_explicitAlwaysOnBottom = false;
     qreal m_radius = 0.0;
+    // Per-window SSD customization state (treeland-decoration-unstable-v1).
+    // Defaults mirror Decoration.qml (XdgShadow / Border) rendering so that
+    // windows without a decoration context look unchanged.
+    qreal m_shadowBlurRadius = 40.0;
+    qreal m_shadowOffsetX = 0.0;
+    qreal m_shadowOffsetY = 10.0;
+    QColor m_shadowColor = QColor(0, 0, 0, 102); // rgba(0,0,0,0.4)
+    bool m_shadowVisible = true;
+    qreal m_borderWidth = 1.0;
+    QColor m_borderColor = QColor(0, 0, 0, 26); // rgba(0,0,0,0.1)
+    bool m_borderVisible = true;
     QRect m_iconGeometry;
     ActiveControlStates m_hasActiveCapability =
         ActiveControlStates(ActiveControlState::UnMinimized);
@@ -494,6 +567,7 @@ private:
     uint m_noTitleBar : 1;
     uint m_noCornerRadius : 1;
     uint m_alwaysOnTop : 1;
+    uint m_alwaysOnBottom : 1;
     uint m_skipSwitcher : 1;
     uint m_skipDockPreView : 1;
     uint m_skipMutiTaskView : 1;

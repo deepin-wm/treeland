@@ -92,6 +92,7 @@ void Multitaskview::exit(SurfaceWrapper *surface, bool immediately)
 
 void Multitaskview::enter(ActiveReason reason)
 {
+    Helper::instance()->cancelShowDesktop();
     Helper::instance()->activateSurface(nullptr);
     if (reason == ActiveReason::ShortcutKey)
         Helper::instance()->setCurrentMode(Helper::CurrentMode::Multitaskview);
@@ -158,9 +159,9 @@ void MultitaskviewSurfaceModel::initializeModel()
                 &MultitaskviewSurfaceModel::handleWrapperOutputChanged,
                 Qt::UniqueConnection);
         connect(surface,
-                &SurfaceWrapper::surfaceStateChanged,
+                &SurfaceWrapper::minimizedChanged,
                 this,
-                &MultitaskviewSurfaceModel::handleSurfaceStateChanged,
+                &MultitaskviewSurfaceModel::handleMinimizedChanged,
                 Qt::UniqueConnection);
     }
     std::sort(m_data.begin(),
@@ -497,7 +498,7 @@ void MultitaskviewSurfaceModel::handleWrapperOutputChanged()
     }
 }
 
-void MultitaskviewSurfaceModel::handleSurfaceStateChanged()
+void MultitaskviewSurfaceModel::handleMinimizedChanged()
 {
     auto surface = qobject_cast<SurfaceWrapper *>(sender());
     Q_ASSERT(surface);
@@ -558,9 +559,9 @@ void MultitaskviewSurfaceModel::handleSurfaceAdded(SurfaceWrapper *surface)
             &MultitaskviewSurfaceModel::handleWrapperOutputChanged,
             Qt::UniqueConnection);
     connect(surface,
-            &SurfaceWrapper::surfaceStateChanged,
+            &SurfaceWrapper::minimizedChanged,
             this,
-            &MultitaskviewSurfaceModel::handleSurfaceStateChanged,
+            &MultitaskviewSurfaceModel::handleMinimizedChanged,
             Qt::UniqueConnection);
     if (surface->ownsOutput() == output()) {
         if (surfaceReady(surface)) {
@@ -700,9 +701,9 @@ void MultitaskviewSurfaceModel::disconnectSurface(SurfaceWrapper *surface)
                this,
                &MultitaskviewSurfaceModel::handleWrapperOutputChanged);
     disconnect(surface,
-               &SurfaceWrapper::surfaceStateChanged,
+               &SurfaceWrapper::minimizedChanged,
                this,
-               &MultitaskviewSurfaceModel::handleSurfaceStateChanged);
+               &MultitaskviewSurfaceModel::handleMinimizedChanged);
     disconnect(surface,
                &SurfaceWrapper::normalGeometryChanged,
                this,

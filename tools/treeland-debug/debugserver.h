@@ -1,0 +1,119 @@
+// Copyright (C) 2026 UnionTech Software Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+
+#pragma once
+
+#include "debugsession.h"
+
+#include <QHttpServer>
+#include <QHttpServerResponse>
+#include <QObject>
+#include <QString>
+
+// HTTP + WebSocket server exposing every treeland-debug capability over the
+// network. Each HTTP request (and each WebSocket one-shot command) creates its
+// own Session — connecting to the compositor's remote object only for the
+// duration of that request, then tearing it down — so the server consumes no
+// compositor-side resources while idle. Live WebSocket subscriptions (top,
+// events, watch) hold a Session open only for the lifetime of the subscription.
+class DebugServer : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit DebugServer(const QStringList &urls, const QString &name, int timeoutMs,
+                         QObject *parent = nullptr);
+
+    // Binds the HTTP and WebSocket listener to @p host:@p port.  Returns true
+    // on success.
+    bool listen(const QString &host, int port);
+
+private:
+    // Creates and connects a fresh one-shot Session.  Returns true on success.
+    bool createSession(Session &session);
+
+    // Helper: runs a Session-scoped RPC and returns the JSON result object
+    // {ok, data} or {ok:false, error}.  Used by HTTP handlers that don't need
+    // custom serialization.
+    QJsonObject sessionRequest(
+        const std::function<QJsonObject(Session &)> &work);
+
+    // --- HTTP route handlers (inspection) ---
+    QJsonObject handleTree();
+    QJsonObject handleCursor();
+    QJsonObject handleWindows();
+    QJsonObject handleClients();
+    QJsonObject handleFocused();
+    QJsonObject handleCursorWindow();
+    QJsonObject handleScene(const QHttpServerRequest &request);
+
+    // --- HTTP route handlers (window control) ---
+    QJsonObject handleActivate(const QHttpServerRequest &request);
+    QJsonObject handleClose(const QHttpServerRequest &request);
+    QJsonObject handleMinimize(const QHttpServerRequest &request);
+    QJsonObject handleMaximize(const QHttpServerRequest &request);
+    QJsonObject handleFullscreen(const QHttpServerRequest &request);
+    QJsonObject handleMove(const QHttpServerRequest &request);
+    QJsonObject handleResize(const QHttpServerRequest &request);
+    QJsonObject handleWorkspace(const QHttpServerRequest &request);
+
+    // --- HTTP route handlers (input / events) ---
+    QJsonObject handleMoveCursor(const QHttpServerRequest &request);
+    QJsonObject handleEventMotion(const QHttpServerRequest &request);
+    QJsonObject handleEventButton(const QHttpServerRequest &request);
+    QJsonObject handleEventKey(const QHttpServerRequest &request);
+    QJsonObject handleEvents(const QHttpServerRequest &request);
+
+    // --- HTTP route handlers (image capture, return raw PNG) ---
+    QHttpServerResponse handleScreenshotOutput(const QHttpServerRequest &request);
+    QHttpServerResponse handleScreenshotWindow(const QHttpServerRequest &request);
+
+    // --- Internal handler overloads (JSON-body / param-based) ---
+    // Used by both the HTTP POST routes and the MCP tools/call dispatcher so
+    // that parameter extraction is not tied to QHttpServerRequest.
+    QJsonObject handleScene(const QString &target);
+    QJsonObject handleActivate(const QJsonObject &body);
+    QJsonObject handleClose(const QJsonObject &body);
+    QJsonObject handleMinimize(const QJsonObject &body);
+    QJsonObject handleMaximize(const QJsonObject &body);
+    QJsonObject handleFullscreen(const QJsonObject &body);
+    QJsonObject handleMove(const QJsonObject &body);
+    QJsonObject handleResize(const QJsonObject &body);
+    QJsonObject handleWorkspace(const QJsonObject &body);
+    QJsonObject handleMoveCursor(const QJsonObject &body);
+    QJsonObject handleEventMotion(const QJsonObject &body);
+    QJsonObject handleEventButton(const QJsonObject &body);
+    QJsonObject handleEventKey(const QJsonObject &body);
+    QJsonObject handleEvents(quint64 since);
+
+    // --- Screenshot byte helpers (used by MCP to return base64 images) ---
+    struct ScreenshotBytes {
+        bool ok = false;
+        QByteArray data;
+        QString error;
+    };
+    ScreenshotBytes captureOutputBytes(const QString &outputName);
+    ScreenshotBytes captureWindowBytes(const QString &target);
+
+    // --- MCP (Model Context Protocol) over Streamable HTTP ---
+    QHttpServerResponse handleMcpPost(const QHttpServerRequest &request);
+    QJsonObject mcpInitialize(const QJsonObject &params);
+    QJsonObject mcpToolsList() const;
+    QJsonObject mcpToolsCall(const QJsonObject &params);
+    // Dispatches one tool call, returning the MCP content array and setting
+    // *isError when the tool reported a failure.
+    QJsonArray mcpDispatchTool(const QString &name, const QJsonObject &args,
+                               bool *isError);
+
+    // --- WebSocket handling ---
+    void onNewWebSocketConnection();
+    void handleWebSocketMessage(class QWebSocket *socket, const QString &message);
+    void startLiveSubscription(QWebSocket *socket, const QString &id,
+                               DebugCommand command, int intervalMs);
+    void stopLiveSubscription(QWebSocket *socket, const QString &id);
+    QStringList m_urls;
+    QString m_name;
+    int m_timeoutMs;
+    QHttpServer m_httpServer;
+};
+

@@ -94,7 +94,7 @@ void SeatSurfaceManager::onActivatedSurfaceFocusCapabilityChanged()
     // While showing the desktop, keyboard focus is on the desktop layer, not on the
     // (hidden) activated surface; a focus-capability change of the activated
     // surface must not yank keyboard focus back to the window.
-    if (helper->showDesktopState() == WindowManagementInterfaceV1::DesktopState::Show)
+    if (helper->showDesktopState() == ShowDesktopInterfaceV1::State::Show)
         return;
 
     if (m_activatedSurface->hasFocusCapability()) {
@@ -199,7 +199,7 @@ void SeatSurfaceManager::beginMoveResize(SurfaceWrapper *surface, Qt::Edges edge
     m_moveResizeState.edges = edges;
     m_moveResizeState.startGeometry = surface->geometry();
     m_moveResizeState.settingPositionFlag = false;
-    m_moveResizeState.detectedTileMode = QuickTile::Mode::None;
+    m_moveResizeState.detectedTileMode = SurfaceWrapper::TileMode::None;
     m_moveResizeState.edgeTilePreviewActive = false;
     m_moveResizeState.edgeTileInnerBorder = false;
     m_moveResizeState.detectedTileOutput = nullptr;
@@ -228,7 +228,10 @@ void SeatSurfaceManager::doMoveResize(const QPointF &delta)
             geo.setBottom(geo.bottom() + delta.y());
 
         QRectF alignedGeometry = surface->alignGeometryToPixelGrid(geo);
-        surface->resize(alignedGeometry.size());
+        QSizeF targetSize = alignedGeometry.size();
+        if (m_resizeClampActive)
+            targetSize = applyResizeClamp(targetSize);
+        surface->resize(targetSize);
     } else {
         auto newPos = m_moveResizeState.startGeometry.topLeft() + delta;
         QPointF alignedPos = surface->alignToPixelGrid(newPos);
@@ -247,13 +250,13 @@ void SeatSurfaceManager::endMoveResize()
     const bool previewActive = m_moveResizeState.edgeTilePreviewActive;
 
     // Clear state first so filterSurfaceStateChange won't intercept the
-    // subsequent setSurfaceState(Tiling) issued by QuickTile::apply.
+    // subsequent setSurfaceState(Tiling) issued by SurfaceWrapper::applyTileMode.
     m_moveResizeState.surface = nullptr;
     m_moveResizeState.edges = Qt::Edges();
     m_moveResizeState.startGeometry = QRectF();
     m_moveResizeState.initialPosition = QPointF();
     m_moveResizeState.settingPositionFlag = false;
-    m_moveResizeState.detectedTileMode = QuickTile::Mode::None;
+    m_moveResizeState.detectedTileMode = SurfaceWrapper::TileMode::None;
     m_moveResizeState.edgeTilePreviewActive = false;
     m_moveResizeState.edgeTileInnerBorder = false;
     m_moveResizeState.detectedTileOutput = nullptr;
@@ -264,7 +267,7 @@ void SeatSurfaceManager::endMoveResize()
         surface->shellSurface()->setResizeing(false);
         surface->setXwaylandPositionFromSurface(true);
     }
-    if (!previewActive || detectedMode == QuickTile::Mode::None) {
+    if (!previewActive || detectedMode == SurfaceWrapper::TileMode::None) {
         // Ensure window is still visible on screen after a plain move/resize.
         if (m_rootContainer)
             m_rootContainer->ensureSurfaceNormalPositionValid(surface);
@@ -272,10 +275,10 @@ void SeatSurfaceManager::endMoveResize()
         Output *out = nullptr;
         if (m_rootContainer && m_seat && m_seat->cursor())
             out = m_rootContainer->outputAt(m_seat->cursor()->position());
-        QuickTile::apply(surface, detectedMode, out);
+        surface->applyTileMode(detectedMode, out);
     }
 
-    Q_EMIT moveResizeChanged();
+    Q_EMIT moveResizeChanged(surface);
 }
 
 SurfaceWrapper *SeatSurfaceManager::moveResizeSurface() const
@@ -292,7 +295,7 @@ void SeatSurfaceManager::cancelMoveResize()
     auto startGeo = m_moveResizeState.startGeometry;
     // Cancel discards any edge-tiling detected during the move: restore the
     // original (normal) geometry captured at beginMoveResize.
-    m_moveResizeState.detectedTileMode = QuickTile::Mode::None;
+    m_moveResizeState.detectedTileMode = SurfaceWrapper::TileMode::None;
     m_moveResizeState.detectedTileOutput = nullptr;
     m_moveResizeState.edgeTilePreviewActive = false;
     m_moveResizeState.edgeTileInnerBorder = false;
@@ -305,6 +308,42 @@ void SeatSurfaceManager::cancelMoveResize()
     }
 
     endMoveResize();
+}
+
+void SeatSurfaceManager::setResizeClamp(qreal minW, qreal maxW, qreal minH, qreal maxH)
+{
+    m_resizeClampActive = true;
+    m_clampMinW = minW;
+    m_clampMaxW = maxW;
+    m_clampMinH = minH;
+    m_clampMaxH = maxH;
+}
+
+void SeatSurfaceManager::clearResizeClamp()
+{
+    m_resizeClampActive = false;
+    m_clampMinW = m_clampMaxW = 0;
+    m_clampMinH = m_clampMaxH = 0;
+}
+
+QSizeF SeatSurfaceManager::applyResizeClamp(const QSizeF &target) const
+{
+    QSizeF clamped = target;
+
+    const Qt::Edges edges = m_moveResizeState.edges;
+    if (edges & (Qt::LeftEdge | Qt::RightEdge)) {
+        if (m_clampMinW > 0)
+            clamped.setWidth(qMax(clamped.width(), m_clampMinW));
+        if (m_clampMaxW > 0)
+            clamped.setWidth(qMin(clamped.width(), m_clampMaxW));
+    }
+    if (edges & (Qt::TopEdge | Qt::BottomEdge)) {
+        if (m_clampMinH > 0)
+            clamped.setHeight(qMax(clamped.height(), m_clampMinH));
+        if (m_clampMaxH > 0)
+            clamped.setHeight(qMin(clamped.height(), m_clampMaxH));
+    }
+    return clamped;
 }
 
 void SeatSurfaceManager::cancelMoveResize(SurfaceWrapper *surface)
@@ -323,13 +362,13 @@ void SeatSurfaceManager::startEdgeTileDelay()
         connect(m_edgeTileDelayTimer, &QTimer::timeout, this, [this]() {
             auto &mr = m_moveResizeState;
             if (mr.surface && mr.edges == Qt::Edges()
-                && mr.detectedTileMode != QuickTile::Mode::None) {
+                && mr.detectedTileMode != SurfaceWrapper::TileMode::None) {
                 mr.edgeTilePreviewActive = true;
                 Output *out = nullptr;
                 if (m_rootContainer && m_seat && m_seat->cursor())
                     out = m_rootContainer->outputAt(m_seat->cursor()->position());
                 if (m_rootContainer)
-                    m_rootContainer->updateEdgeTilePreview(mr.detectedTileMode, out);
+                    m_rootContainer->updateEdgeTilePreview(mr.detectedTileMode, out, m_seat);
             }
         });
     }
@@ -461,7 +500,7 @@ void SeatSurfaceManager::onKeyboardGrabEnd()
     // While showing the desktop, keyboard focus is on the desktop layer, not on the
     // (hidden) activated surface; do not yank it back to the window.
     if (auto *helper = Helper::instance()) {
-        if (helper->showDesktopState() == WindowManagementInterfaceV1::DesktopState::Show)
+        if (helper->showDesktopState() == ShowDesktopInterfaceV1::State::Show)
             return;
     }
 

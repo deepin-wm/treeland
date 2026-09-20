@@ -10,7 +10,8 @@
 #include "modules/virtual-output/virtualoutputmanagerinterfacev1.h"
 #include "modules/wallpaper/wallpapermanagerinterfacev1.h"
 #include "modules/wallpaper/wallpapernotifierinterfacev1.h"
-#include "modules/window-management/windowmanagementinterfacev1.h"
+#include "modules/show-desktop/showdesktopinterfacev1.h"
+#include "modules/xwindow-control/xwindowcontrolinterfacev1.h"
 #include "utils/fpsdisplaymanager.h"
 
 #include <xcb/xproto.h>
@@ -60,7 +61,6 @@ class WClientPrivate;
 class WCursor;
 class WExtForeignToplevelListV1;
 class WForeignToplevel;
-class WLayerSurface;
 class WOutput;
 class WOutputItem;
 class WOutputLayer;
@@ -78,23 +78,25 @@ class WToplevelSurface;
 class WXdgDecorationManager;
 class WXdgOutputManager;
 class WXWayland;
+class WPointerConstraintsV1;
 
 class WForeignToplevel;
 class WExtForeignToplevelListV1;
 class WOutputManagerV1;
-class WLayerSurface;
+class WRelativePointerManagerV1;
 class WSessionLockManager;
 class WSessionLock;
 WAYLIB_SERVER_END_NAMESPACE
 
 class SeatsManager;
+class PointerConstraintsManager;
 
 WAYLIB_SERVER_USE_NAMESPACE
 
 class CaptureSourceSelector;
 class DDEShellManagerInterfaceV1;
 class DDMInterfaceV1;
-class ForeignToplevelManagerInterfaceV1;
+class ForeignToplevelManagerInterfaceV2;
 class FpsDisplayManager;
 class GreeterProxy;
 class ILockScreen;
@@ -106,8 +108,11 @@ class Output;
 class OutputManager;
 class OutputManagerV1;
 class PersonalizationManagerInterfaceV1;
+class AppearanceInterfaceV1;
+class AppearanceManagerInterfaceV1;
+class DecorationManagerInterfaceV1;
 class RootSurfaceContainer;
-class ScreensaverInterfaceV1;
+class ScreensaverInterfaceV2;
 class SessionManager;
 class SettingManager;
 class SessionModel;
@@ -122,9 +127,10 @@ class TreelandRemoteSource;
 class UserModel;
 class VirtualOutputManagerInterfaceV1;
 class WallpaperColorInterfaceV1;
-class WindowManagementInterfaceV1;
+class ShowDesktopInterfaceV1;
 class WindowPickerInterface;
 class TreelandKeyboardStateNotifyManagerInterfaceV1;
+class KeyboardShortcutsInhibitManagerV1;
 class WallpaperManager;
 class WallpaperItem;
 class TreelandInputManagerInterfaceV1;
@@ -157,7 +163,7 @@ public:
     explicit Helper(QObject *parent = nullptr);
     ~Helper() override;
 
-    static void syncPaletteTypeWithWindowThemeType(int32_t themeType);
+    static void syncPaletteTypeWithWindowColorScheme(int32_t colorScheme);
 
     enum class OutputMode
     {
@@ -189,6 +195,7 @@ public:
     void init(Treeland::Treeland *treeland);
 
     RootSurfaceContainer *rootSurfaceContainer() const;
+    WServer *server() const;
     Output *getOutput(WOutput *output) const;
 
     float animationSpeed() const;
@@ -203,13 +210,18 @@ public:
 
     WSeat *seat() const;
 
+    // Moves the primary seat cursor to @p position, first ending any
+    // in-progress interactive move/resize for every seat so the motion is
+    // not fed into an active transaction. Exposed for the debug control API.
+    void setCursorPosition(const QPointF &position);
+
     bool toggleDebugMenuBar();
 
-    WindowManagementInterfaceV1::DesktopState showDesktopState() const;
+    ShowDesktopInterfaceV1::State showDesktopState() const;
 
-    Q_INVOKABLE bool isLaunchpad(WLayerSurface *surface) const;
     Q_INVOKABLE void setLaunchpadMapped(WOutput *output, bool mapped);
     Q_INVOKABLE void showDesktop(WOutput *output);
+    Q_INVOKABLE void cancelShowDesktop(SurfaceWrapper *excludeSurface = nullptr);
     Q_INVOKABLE void startLockscreen(WOutput *output, bool showAnimation);
     Q_INVOKABLE QString currentWorkspaceWallpaper(WOutput *output);
     Q_INVOKABLE QString currentLockScreenWallpaper(WOutput *output);
@@ -271,7 +283,8 @@ public:
 public Q_SLOTS:
     void activateSurface(SurfaceWrapper *wrapper,
                          Qt::FocusReason reason = Qt::OtherFocusReason,
-                         WSeat *seat = nullptr);
+                         WSeat *seat = nullptr,
+                         bool raise = true);
     void forceActivateSurface(SurfaceWrapper *wrapper,
                               Qt::FocusReason reason = Qt::OtherFocusReason,
                               WSeat *seat = nullptr);
@@ -325,6 +338,7 @@ private:
     void handleNewForeignToplevelCaptureRequest(wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request);
     void onExtSessionLock(WSessionLock *lock);
 private:
+    friend class PointerConstraintsManager;
     friend class SessionManager;
     friend class WallpaperManager;
     friend class WallpaperItem;
@@ -337,9 +351,9 @@ private:
 
     SurfaceWrapper *keyboardFocusSurface() const;
     SurfaceWrapper *activatedSurface() const;
-    void setActivatedSurface(SurfaceWrapper *newActivateSurface, WSeat *seat = nullptr);
-
-    void setCursorPosition(const QPointF &position);
+    void setActivatedSurface(SurfaceWrapper *newActivateSurface,
+                             WSeat *seat = nullptr,
+                             bool raise = true);
 
     bool beforeDisposeEvent(WSeat *seat, QWindow *window, QInputEvent *event) override;
     bool afterHandleEvent(WSeat *seat, WSurface *watched, QObject *shellObject,
@@ -452,21 +466,29 @@ private:
     WXdgToplevelTagManagerV1 *m_xdgToplevelTagManagerV1 = nullptr;
     WForeignToplevel *m_foreignToplevel = nullptr;
     WExtForeignToplevelListV1 *m_extForeignToplevelListV1 = nullptr;
+    WRelativePointerManagerV1 *m_relativePointerManager = nullptr;
+    WPointerConstraintsV1 *m_pointerConstraintsV1 = nullptr;
+    PointerConstraintsManager *m_pointerConstraintsManager = nullptr;
     ShortcutManagerV2 *m_shortcutManager = nullptr;
     PersonalizationManagerInterfaceV1 *m_personalizationInterfaceV1 = nullptr;
+    AppearanceInterfaceV1 *m_appearanceInterfaceV1 = nullptr;
+    AppearanceManagerInterfaceV1 *m_appearanceManagerInterfaceV1 = nullptr;
+    DecorationManagerInterfaceV1 *m_decorationInterfaceV1 = nullptr;
     WallpaperColorInterfaceV1 *m_wallpaperColorV1 = nullptr;
     WOutputManagerV1 *m_outputManager = nullptr;
     WXdgOutputManager *m_xwaylandOutputManager = nullptr;
-    WindowManagementInterfaceV1 *m_windowManagementInterfaceV1 = nullptr;
-    WindowManagementInterfaceV1::DesktopState m_showDesktop = WindowManagementInterfaceV1::DesktopState::Normal;
+    ShowDesktopInterfaceV1 *m_showDesktopInterfaceV1 = nullptr;
+    XWindowControlInterfaceV1 *m_xWindowControlInterfaceV1 = nullptr;
+    ShowDesktopInterfaceV1::State m_showDesktop = ShowDesktopInterfaceV1::State::Normal;
     DDEShellManagerInterfaceV1 *m_ddeShellV1 = nullptr;
     VirtualOutputManagerInterfaceV1 *m_virtualOutputInterfaceV1 = nullptr;
     OutputManagerV1 *m_outputManagerV1 = nullptr;
     DDMInterfaceV1 *m_ddmInterfaceV1 = nullptr;
-    ScreensaverInterfaceV1 *m_screensaverInterfaceV1 = nullptr;
+    ScreensaverInterfaceV2 *m_screensaverInterfaceV2 = nullptr;
     TreelandWallpaperManagerInterfaceV1 *m_wallpaperManagerInterfaceV1 = nullptr;
     TreelandWallpaperNotifierInterfaceV1 *m_wallpaperNotifierInterfaceV1 = nullptr;
     TreelandKeyboardStateNotifyManagerInterfaceV1 *m_keyboardStateNotifyManagerInterfaceV1 = nullptr;
+    KeyboardShortcutsInhibitManagerV1 *m_keyboardShortcutsInhibitManagerV1 = nullptr;
 #ifdef EXT_SESSION_LOCK_V1
     WSessionLockManager *m_sessionLockManager = nullptr;
     QTimer *m_lockScreenGraceTimer = nullptr;

@@ -16,16 +16,18 @@
 
 ## Build & Test
 ```bash
-cmake --preset default
-cmake --build --preset default
-ctest --test-dir build --output-on-failure
+cmake --preset ci
+cmake --build --preset ci
+ctest --preset ci
 ```
 
-- Presets in `CMakePresets.json`: `default`, `clang`, `ci`, `ci-clang`.
+- For daily development prefer the `ci` preset: it mirrors CI's `-Wall -Wextra -Werror` flags, so warnings that would fail CI are caught locally before push. Other presets in `CMakePresets.json`: `default`, `clang`, `ci-clang`.
 - `WITH_SUBMODULE_WAYLIB=ON|OFF` selects submodule vs system waylib. Default preference is `ON`.
 
 ## Project Rules
 - Use C++20 and Qt6 only.
+- Prefer member function pointers over lambdas for `connect()` and signal listeners when the lambda only forwards to a single member function.
+- Avoid complex lambdas; if a lambda body grows beyond a few lines, extract it into a named member function.
 - Keep diffs minimal: touch only task-related files and symbols.
 - Avoid broad refactors, unrelated renames, and unrelated reformatting.
 - New source files must include an SPDX line consistent with this repo, typically `SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`.

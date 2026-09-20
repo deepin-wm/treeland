@@ -10,6 +10,7 @@
 
 #include <QEvent>
 #include <QSharedData>
+#include <xkbcommon/xkbcommon.h>
 
 Q_MOC_INCLUDE(<wsurface.h>)
 
@@ -77,6 +78,8 @@ public:
     void attachInputDevice(WInputDevice *device);
     void detachInputDevice(WInputDevice *device);
 
+    void setXkbRuleNames(const struct xkb_rule_names &rules);
+
     // WSurfaceItem is a kind of shellObject
     static bool sendEvent(WSurface *target, QObject *shellObject, QObject *eventObject, QInputEvent *event);
     static WSeat *get(QInputEvent *event);
@@ -112,6 +115,8 @@ Q_SIGNALS:
     void requestCursorSurface(WAYLIB_SERVER_NAMESPACE::WSurface *surface, const QPoint &hotspot);
     void requestDrag(WAYLIB_SERVER_NAMESPACE::WSurface *surface);
     void alwaysUpdateHoverTargetChanged();
+    void relativePointerMotion(uint32_t timestamp, const QPointF &delta,
+                                const QPointF &unacceleratedDelta);
 
 protected:
     using QObject::eventFilter;

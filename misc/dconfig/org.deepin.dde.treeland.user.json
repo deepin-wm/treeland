@@ -233,14 +233,14 @@
             "permissions": "readwrite",
             "visibility": "public"
         },
-        "windowThemeType": {
-            "value": 1,
-            "serial": 0,
+        "windowColorScheme": {
+            "value": 0,
+            "serial": 1,
             "flags": [],
-            "name": "Global Window Theme Type",
-            "name[zh_CN]": "全局窗口主题类型",
-            "description": "System theme type: 1 light, 2 dark",
-            "description[zh_CN]": "系统主题类型：1 亮色，2 暗色",
+            "name": "Global Window Color Scheme",
+            "name[zh_CN]": "全局窗口配色",
+            "description": "Color scheme hint: 0 light, 1 dark",
+            "description[zh_CN]": "配色偏好：0 亮色，1 暗色",
             "permissions": "readwrite",
             "visibility": "public"
         },
@@ -571,6 +571,17 @@
             "name[zh_CN]": "顶部边缘触发距离",
             "description": "Distance in pixels from the top screen edge at which maximize triggers",
             "description[zh_CN]": "距离屏幕顶部边缘多少像素时触发最大化",
+            "permissions": "readwrite",
+            "visibility": "public"
+        },
+        "edgeQuadrantZoneRatio": {
+            "value": 0.25,
+            "serial": 0,
+            "flags": [],
+            "name": "Edge Quadrant Zone Ratio",
+            "name[zh_CN]": "四分之一屏触发区域比例",
+            "description": "Ratio of the edge length forming the corner (quadrant) tiling zone. Cursor within this ratio of the top/bottom of a side edge tiles to the corner quadrant, the middle zone keeps half-screen tiling. Range: 0.0-0.5",
+            "description[zh_CN]": "边缘长度中形成四分之一屏（角落）平铺区域的比值。光标位于左右边缘的上/下该比例范围内时平铺到对应角落象限，中间区域保持半屏平铺。范围：0.0-0.5。",
             "permissions": "readwrite",
             "visibility": "public"
         },

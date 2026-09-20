@@ -1,7 +1,7 @@
 # Copyright (C) 2026 UnionTech Software Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 
-# CMake build for vendored wlroots 0.19.3.
+# CMake build for vendored wlroots 0.20.2.
 # Scaffold in wlroots/; sources under 3rdparty/wlroots (non-squash subtree so
 # git blame keeps upstream authors). Update via update-from-upstream.sh.
 # Do not call project() here.
@@ -17,10 +17,10 @@ if(NOT EXISTS "${WLROOTS_SOURCE_DIR}/include/wlr")
         "Expected vendored sources under 3rdparty/wlroots.")
 endif()
 
-set(WLROOTS_VERSION 0.19.3)
+set(WLROOTS_VERSION 0.20.2)
 set(WLROOTS_VERSION_MAJOR 0)
-set(WLROOTS_VERSION_MINOR 19)
-set(WLROOTS_VERSION_PATCH 3)
+set(WLROOTS_VERSION_MINOR 20)
+set(WLROOTS_VERSION_PATCH 2)
 
 # ---------------------------------------------------------------------------
 # Feature options (defaults ON; soft options may auto-disable)
@@ -57,12 +57,12 @@ include(CheckSymbolExists)
 include(CheckCSourceCompiles)
 include(TestBigEndian)
 
-pkg_check_modules(WAYLAND_SERVER REQUIRED IMPORTED_TARGET wayland-server>=1.23.1)
-pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm>=2.4.122)
+pkg_check_modules(WAYLAND_SERVER REQUIRED IMPORTED_TARGET wayland-server>=1.26.0)
+pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm>=2.4.134)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
-pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1>=0.43.0)
-pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols>=1.41)
-pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client>=1.23.1)
+pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1>=0.46.4)
+pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols>=1.49)
+pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client>=1.26.0)
 pkg_check_modules(WAYLAND_SCANNER_PC REQUIRED wayland-scanner)
 
 pkg_get_variable(WAYLAND_PROTOCOLS_DATADIR wayland-protocols pkgdatadir)
@@ -93,7 +93,7 @@ set(HAVE_LIBLIFTOFF_0_5 0)
 set(HAVE_XCB_ERRORS 0)
 set(HAVE_EGL 0)
 set(HAVE_EVENTFD 0)
-set(HAVE_GBM_BO_GET_FD_FOR_PLANE 0)
+set(HAVE_LINUX_SYNC_FILE 0)
 set(HAVE_LIBINPUT_BUSTYPE 0)
 set(HAVE_LIBINPUT_SWITCH_KEYPAD_SLIDE 0)
 set(HAVE_XWAYLAND_LISTENFD 0)
@@ -324,6 +324,10 @@ if(_have_eventfd)
     set(HAVE_EVENTFD 1)
 endif()
 
+check_include_file("linux/sync_file.h" _have_linux_sync_file)
+if(_have_linux_sync_file)
+    set(HAVE_LINUX_SYNC_FILE 1)
+endif()
 # ICONDIR (cursor theme search path)
 if(NOT DEFINED WLROOTS_ICONDIR OR WLROOTS_ICONDIR STREQUAL "")
     set(WLROOTS_ICONDIR "${CMAKE_INSTALL_FULL_DATADIR}/icons")
@@ -393,6 +397,7 @@ file(WRITE "${_wlr_internal_config_h}" "\
 #define HAVE_XCB_ERRORS ${HAVE_XCB_ERRORS}
 #define HAVE_EGL ${HAVE_EGL}
 #define HAVE_EVENTFD ${HAVE_EVENTFD}
+#define HAVE_LINUX_SYNC_FILE ${HAVE_LINUX_SYNC_FILE}
 #define HAVE_GBM_BO_GET_FD_FOR_PLANE ${HAVE_GBM_BO_GET_FD_FOR_PLANE}
 #define HAVE_LIBINPUT_BUSTYPE ${HAVE_LIBINPUT_BUSTYPE}
 #define HAVE_LIBINPUT_SWITCH_KEYPAD_SLIDE ${HAVE_LIBINPUT_SWITCH_KEYPAD_SLIDE}
@@ -532,28 +537,38 @@ set_target_properties(waylib-wlroots PROPERTIES
 # ---------------------------------------------------------------------------
 # Install library only (no headers, no .pc)
 # ---------------------------------------------------------------------------
+# Install the runtime library (versioned .so.*) only; the .so dev
+# symlink is installed separately when TREELAND_INSTALL_DEV is ON.
 install(TARGETS waylib-wlroots
-    EXPORT WaylibServerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        NAMELINK_SKIP
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# Install the wlroots headers so consumers of the exported
-# Waylib::waylib-wlroots target can compile against them.
-install(DIRECTORY ${WLROOTS_SOURCE_DIR}/include/wlr
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(DIRECTORY ${WLR_GENERATED_INCLUDE_DIR}/wlr
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-# Flat protocol headers (e.g. cursor-shape-v1-protocol.h) are included
-# without a directory prefix.
-install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/protocol/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        FILES_MATCHING PATTERN "*.h")
-# wlroots' own private protocol headers (drm-client-protocol.h etc.)
-install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/protocol/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/wlr
-        FILES_MATCHING PATTERN "*.h")
+if(TREELAND_INSTALL_DEV)
+    install(TARGETS waylib-wlroots
+        EXPORT WaylibServerTargets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            NAMELINK_ONLY
+    )
+
+    # Install the wlroots headers so consumers of the exported
+    # Waylib::waylib-wlroots target can compile against them.
+    install(DIRECTORY ${WLROOTS_SOURCE_DIR}/include/wlr
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(DIRECTORY ${WLR_GENERATED_INCLUDE_DIR}/wlr
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    # Flat protocol headers (e.g. cursor-shape-v1-protocol.h) are included
+    # without a directory prefix.
+    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/protocol/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.h")
+    # wlroots' own private protocol headers (drm-client-protocol.h etc.)
+    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/protocol/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/wlr
+            FILES_MATCHING PATTERN "*.h")
+endif()
 
 # ---------------------------------------------------------------------------
 # pkg-config metadata for installed-library consumers (e.g. a standalone
@@ -573,8 +588,10 @@ string(REPLACE ";" " " WAYLIB_WLROOTS_PC_FEATURES "${WAYLIB_WLROOTS_PC_FEATURES}
 set(WAYLIB_WLROOTS_PC_VERSION ${WLROOTS_VERSION})
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/waylib-wlroots.pc.in
                ${CMAKE_CURRENT_BINARY_DIR}/waylib-wlroots.pc @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/waylib-wlroots.pc
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+if(TREELAND_INSTALL_DEV)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/waylib-wlroots.pc
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif()
 
 # ---------------------------------------------------------------------------
 # Export version / feature vars for waylib (lowercase true/false)

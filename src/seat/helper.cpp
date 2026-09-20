@@ -3,8 +3,7 @@
 
 #include <wscopedvalue.h>
 #include "helper.h"
-#include "ext_foreign_toplevel_image_capture_source_manager_v1.h"
-
+#include "pointerconstraintsmanager.h"
 #include "seatsmanager.h"
 
 #include <QFile>
@@ -41,11 +40,15 @@
 #include "modules/dde-shell/ddeshellmanagerinterfacev1.h"
 #include "modules/ddm/ddminterfacev1.h"
 #include "modules/input-manager/inputmanagerinterfacev1.h"
+#include "modules/keyboard-shortcuts-inhibit/keyboardshortcutsinhibitmanager.h"
 #include "modules/keyboard-state-notify/keyboardstatenotifymanagerinterfacev1.h"
 #include "modules/output-manager/outputmanagement.h"
 #include "modules/personalization/personalizationmanagerinterfacev1.h"
+#include "modules/appearance/appearanceinterfacev1.h"
+#include "modules/appearance/appearancemanagerinterfacev1.h"
+#include "modules/decoration/decorationmanagerinterfacev1.h"
 #include "modules/resource/treelandremotesource.h"
-#include "modules/screensaver/screensaverinterfacev1.h"
+#include "modules/screensaver/screensaverinterfacev2.h"
 #include "modules/shortcut/shortcutcontroller.h"
 #include "modules/shortcut/shortcutmanager.h"
 #include "modules/shortcut/shortcutrunner.h"
@@ -79,16 +82,18 @@
 #include <wextimagecapturesourcev1impl.h>
 #include <wlayersurface.h>
 #include <woutputhelper.h>
-#include <wscoplistener.h>
 #include <woutputitem.h>
 #include <woutputlayout.h>
 #include <woutputmanagerv1.h>
 #include <woutputrenderwindow.h>
 #include <woutputviewport.h>
+#include <wpointerconstraintsv1.h>
 #include <wqmlcreator.h>
 #include <wquickcursor.h>
-#include <wrenderhelper.h>
+#include <wrelativepointermanagerv1.h>
 #include <wremotesubsurfacemanagerv1.h>
+#include <wrenderhelper.h>
+#include <wscoplistener.h>
 #include <wseat.h>
 #include <wsecuritycontextmanager.h>
 #include <wsocket.h>
@@ -274,9 +279,7 @@ Helper::Helper(QObject *parent)
 
     m_renderWindow->setColor(Qt::black);
     m_rootSurfaceContainer->setFlag(QQuickItem::ItemIsFocusScope, true);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     m_rootSurfaceContainer->setFocusPolicy(Qt::StrongFocus);
-#endif
 
     m_shellHandler = new ShellHandler(m_rootSurfaceContainer, m_server);
     connect(m_shellHandler->workspace(),
@@ -284,6 +287,15 @@ Helper::Helper(QObject *parent)
             m_wallpaperManager,
             &WallpaperManager::syncAddWorkspace);
     tryInitRemoteSource();
+#ifndef ALWAYS_ENABLE_TREELAND_DEBUG
+    // Release builds: react to runtime changes of the remoteDebug DConfig key,
+    // creating or destroying the remote source on the fly instead of only at
+    // startup.
+    connect(m_globalConfig.get(),
+            &TreelandConfig::remoteDebugChanged,
+            this,
+            &Helper::tryInitRemoteSource);
+#endif
 
     m_outputManagerHelper = new OutputManager(m_rootSurfaceContainer, m_globalConfig.get(), this);
     connect(m_outputManagerHelper,
@@ -373,26 +385,26 @@ TreelandConfig *Helper::globalConfig()
     return m_globalConfig.get();
 }
 
-void Helper::syncPaletteTypeWithWindowThemeType(int32_t themeType)
+void Helper::syncPaletteTypeWithWindowColorScheme(int32_t colorScheme)
 {
     auto *guiHelper = DTK_GUI_NAMESPACE::DGuiApplicationHelper::instance();
     if (!guiHelper) {
         qCCritical(lcTlConfig) << "DGuiApplicationHelper instance not available, cannot sync "
-                                      "palette type with window theme type.";
+                                      "palette type with window color scheme.";
         return;
     }
 
-    qCDebug(lcTlConfig) << "Syncing palette type with window theme type:" << themeType;
+    qCDebug(lcTlConfig) << "Syncing palette type with window color scheme:" << colorScheme;
 
-    switch (themeType) {
-    case 2:
+    switch (colorScheme) {
+    case 1:
         guiHelper->setPaletteType(Dtk::Gui::DGuiApplicationHelper::DarkType);
         break;
-    case 1:
+    case 0:
         guiHelper->setPaletteType(Dtk::Gui::DGuiApplicationHelper::LightType);
         break;
     default:
-        qCWarning(lcTlConfig) << "Unknown windowThemeType:" << themeType
+        qCWarning(lcTlConfig) << "Unknown windowColorScheme:" << colorScheme
                                   << ", fallback to light.";
         guiHelper->setPaletteType(Dtk::Gui::DGuiApplicationHelper::LightType);
         break;
@@ -401,11 +413,27 @@ void Helper::syncPaletteTypeWithWindowThemeType(int32_t themeType)
 
 void Helper::tryInitRemoteSource()
 {
+#ifdef ALWAYS_ENABLE_TREELAND_DEBUG
+    // Remote debug is on by default in Debug builds so treeland-debug works out
+    // of the box. The source has zero cost until a client connects, so enabling
+    // it unconditionally here is safe even with no debug client attached.
     if (m_treelandRemoteSource)
         return;
-    if (m_globalConfig->debugSource()) {
+    m_treelandRemoteSource = new TreelandRemoteSource(this);
+    return;
+#else
+    // Release builds: follow the remoteDebug DConfig key (default false) and
+    // react to its runtime changes -- toggling the key creates or destroys the
+    // remote source without restarting the compositor.
+    if (m_treelandRemoteSource) {
+        if (!m_globalConfig->remoteDebug()) {
+            delete m_treelandRemoteSource;
+            m_treelandRemoteSource = nullptr;
+        }
+    } else if (m_globalConfig->remoteDebug()) {
         m_treelandRemoteSource = new TreelandRemoteSource(this);
     }
+#endif
 }
 
 bool Helper::isNvidiaCardPresent()
@@ -561,6 +589,12 @@ void Helper::onOutputAdded(WOutput *output)
             }, Qt::QueuedConnection);
         });
     }
+    // The output-management protocol must advertise an output as soon as it
+    // enters the compositor. DConfig restoration is asynchronous and may be
+    // unavailable in minimal sessions; delaying registration until it
+    // completes leaves newly bound clients with an empty head list forever.
+    m_outputManager->newOutput(output);
+
     const bool shouldDisableOutput = !scanned;
     if (shouldDisableOutput) {
         WOutputStateGuard disabledState;
@@ -577,7 +611,6 @@ void Helper::onOutputAdded(WOutput *output)
             return;
         }
 
-        m_outputManager->newOutput(output);
         m_wallpaperManager->ensureWallpaperConfigForOutput(outputObject);
     };
     auto restoreOutputConfig = [this,
@@ -792,14 +825,14 @@ void Helper::onOutputRemoved(WOutput *output)
             QList<Output *> oldOutputsToDelete;
 
             bool removedWasPrimary = (output == m_rootSurfaceContainer->primaryOutput()->output());
-            Output *primaryCandidate = nullptr;
+            Output *sourceCandidate = nullptr;
 
             for (int i = 0; i < m_outputList.size(); i++) {
                 Output *copyOutput = m_outputList.at(i);
 
-                if (copyOutput->isPrimary()) {
-                    if (!primaryCandidate)
-                        primaryCandidate = copyOutput;
+                if (copyOutput->isSource()) {
+                    if (!sourceCandidate)
+                        sourceCandidate = copyOutput;
                     continue;
                 }
 
@@ -813,15 +846,15 @@ void Helper::onOutputRemoved(WOutput *output)
 
                 m_outputList.replace(i, normalOutput);
 
-                if (!primaryCandidate) {
-                    primaryCandidate = normalOutput;
+                if (!sourceCandidate) {
+                    sourceCandidate = normalOutput;
                 }
             }
 
-            if (removedWasPrimary && primaryCandidate) {
-                m_rootSurfaceContainer->setPrimaryOutput(primaryCandidate);
+            if (removedWasPrimary && sourceCandidate) {
+                m_rootSurfaceContainer->setPrimaryOutput(sourceCandidate);
                 if (!surfaces.isEmpty()) {
-                    moveSurfacesToOutput(surfaces, primaryCandidate, o);
+                    moveSurfacesToOutput(surfaces, sourceCandidate, o);
                 }
             }
 
@@ -878,7 +911,17 @@ void Helper::setGamma(struct wlr_gamma_control_manager_v1_set_gamma_event *event
     }
     WOutputStateGuard newState;
 
-    wlr_output_state_set_gamma_lut(newState.get(), ramp_size, r, g, b);
+    wlr_color_transform *colorTransform = nullptr;
+    if (gamma_control) {
+        colorTransform = wlr_color_transform_init_lut_3x1d(ramp_size, r, g, b);
+        if (!colorTransform) {
+            qCWarning(lcTlCore) << "Failed to create color transform for gamma LUT!";
+            wlr_gamma_control_v1_send_failed_and_destroy(gamma_control);
+            return;
+        }
+    }
+    wlr_output_state_set_color_transform(newState.get(), colorTransform);
+    wlr_color_transform_unref(colorTransform);
     const bool commitOk = wlr_output_commit_state(qwOutput, newState.get());
     if (!commitOk) {
         qCCritical(lcTlCore, "commit failed on output  %s", qwOutput->name);
@@ -1075,7 +1118,7 @@ void Helper::onOutputTestOrApply(wlr_output_configuration_v1 *config, bool onlyT
         // binding cannot keep them overlapping the copy source at (0, 0).
         for (int i = 0; i < m_outputList.size(); ++i) {
             Output *copyOutput = m_outputList.at(i);
-            if (copyOutput->isPrimary()) {
+            if (copyOutput->isSource()) {
                 continue;
             }
 
@@ -1421,7 +1464,7 @@ void Helper::onNewIdleInhibitor(wlr_idle_inhibitor_v1 *wlr_inhibitor)
 
 void Helper::updateIdleInhibitor()
 {
-    if (m_screensaverInterfaceV1->isInhibited()) {
+    if (m_screensaverInterfaceV2->isInhibited()) {
         wlr_idle_notifier_v1_set_inhibited(m_idleNotifier, true);
         return;
     }
@@ -1444,10 +1487,10 @@ void Helper::updateIdleInhibitor()
 
 void Helper::onShowDesktop()
 {
-    WindowManagementInterfaceV1::DesktopState s = m_windowManagementInterfaceV1->desktopState();
+    ShowDesktopInterfaceV1::State s = m_showDesktopInterfaceV1->desktopState();
     if (m_showDesktop == s
-        || (s != WindowManagementInterfaceV1::DesktopState::Normal
-            && s != WindowManagementInterfaceV1::DesktopState::Show))
+        || (s != ShowDesktopInterfaceV1::State::Normal
+            && s != ShowDesktopInterfaceV1::State::Show))
         return;
 
     m_showDesktop = s;
@@ -1457,14 +1500,14 @@ void Helper::onShowDesktop()
         if (surface->isMinimized()) {
             continue;
         }
-        if (s == WindowManagementInterfaceV1::DesktopState::Normal) {
+        if (s == ShowDesktopInterfaceV1::State::Normal) {
             surface->startShowDesktopAnimation(true);
-        } else if (s == WindowManagementInterfaceV1::DesktopState::Show) {
+        } else if (s == ShowDesktopInterfaceV1::State::Show) {
             surface->startShowDesktopAnimation(false);
         }
     }
 
-    if (s == WindowManagementInterfaceV1::DesktopState::Show) {
+    if (s == ShowDesktopInterfaceV1::State::Show) {
         // Find the desktop background surface first
         SurfaceWrapper *desktopSurface = nullptr;
         const auto &backgroundSurfaces = m_shellHandler->m_backgroundContainer->surfaces();
@@ -1492,7 +1535,7 @@ void Helper::onShowDesktop()
             // on focus loss exit.
             requestKeyboardFocus(desktopSurface, Qt::OtherFocusReason, seat);
         }
-    } else if (s == WindowManagementInterfaceV1::DesktopState::Normal) {
+    } else if (s == ShowDesktopInterfaceV1::State::Normal) {
         // m_showDesktop already set to s above; the protocol state is already Normal.
         restoreShowDesktopFocus();
     }
@@ -1526,7 +1569,7 @@ void Helper::onSetCopyOutput(VirtualOutputInterfaceV1 *interface)
             return;
         }
 
-        if (!output->isPrimary()) {
+        if (!output->isSource()) {
             QString screen =
                 output->output()->name() + " is already a copy screen, invalid setting!";
             interface->sendError(VirtualOutputInterfaceV1::INVALID_OUTPUT, screen);
@@ -1613,12 +1656,28 @@ void Helper::onSurfaceWrapperAdded(SurfaceWrapper *wrapper)
         connect(wrapper, &SurfaceWrapper::aboutToBeInvalidated,
                 attached, &Personalization::deleteLater);
 
-        auto updateNoTitlebar = [this, attached] {
+        // New SSD personalization protocol (treeland-decoration-unstable-v1).
+        // The frozen Personalization above handles the deprecated
+        // treeland-personalization-manager-v1 window context; per-window
+        // customization for the new protocol is applied via Decoration.
+        auto *decoration =
+            new Decoration(wrapper->shellSurface(), m_decorationInterfaceV1, wrapper);
+        connect(wrapper, &SurfaceWrapper::aboutToBeInvalidated,
+                decoration, &Decoration::deleteLater);
+
+        // Single arbitration point for SurfaceWrapper::noTitleBar. Two
+        // independent sources feed this: the frozen personalization protocol
+        // (Personalization::noTitlebar) and the new per-window decoration
+        // protocol (Decoration::titlebarHidden). Both write into the same
+        // wrapper property, so the final value is decided here.
+        auto updateNoTitlebar = [this, attached, decoration] {
             auto wrapper = attached->surfaceWrapper();
-            if (attached->noTitlebar()) {
+            const bool decorationHides = decoration->hasTitlebarOverride()
+                && decoration->titlebarHidden();
+
+            if (attached->noTitlebar() || decorationHides) {
                 wrapper->setNoTitleBar(true);
-                auto layer = qobject_cast<WLayerSurface *>(wrapper->shellSurface());
-                if (!isLaunchpad(layer)) {
+                if (!wrapper->isLaunchpad()) {
                     wrapper->setNoDecoration(false);
                 }
             } else {
@@ -1643,23 +1702,32 @@ void Helper::onSurfaceWrapperAdded(SurfaceWrapper *wrapper)
         }
 
         connect(attached, &Personalization::windowStateChanged, this, updateNoTitlebar);
+        // Re-arbitrate the titlebar whenever the decoration protocol changes
+        // its override, so it can't be clobbered by (nor clobber) the
+        // personalization path above.
+        connect(decoration, &Decoration::titlebarOverrideChanged, this, updateNoTitlebar);
         updateNoTitlebar();
 
         auto updateBlur = [attached] {
             attached->surfaceWrapper()->setBlur(attached->backgroundType() == Personalization::BackgroundType::Blur);
         };
         connect(attached, &Personalization::backgroundTypeChanged, this, updateBlur);
+
+        // NOTE: corner radius is written by BOTH the deprecated personalization
+        // protocol (here) and the new decoration protocol (Decoration::applyContext).
+        // The two are not arbitrated; if a client uses both, the last signal to
+        // arrive wins. This is intentional: clients are expected to use only one
+        // of the two protocols. When the deprecated personalization protocol is
+        // removed, drop this block and its setRadius() call — the decoration
+        // protocol already drives SurfaceWrapper::setRadius() on its own.
         auto updateCornerRadius = [attached] {
             attached->surfaceWrapper()->setRadius(attached->cornerRadius());
         };
         connect(attached, &Personalization::cornerRadiusChanged, this, updateCornerRadius);
         updateCornerRadius();
         updateBlur();
-        if (isLayer) {
-            auto layer = qobject_cast<WLayerSurface *>(wrapper->shellSurface());
-            if (isLaunchpad(layer))
-                wrapper->setCoverEnabled(true);
-        }
+        if (wrapper->isLaunchpad())
+            wrapper->setCoverEnabled(true);
     }
 
     if (isXwayland) {
@@ -1810,7 +1878,7 @@ void Helper::init(Treeland::Treeland *treeland)
         }
     });
     connect(m_ddeShellV1,
-            &DDEShellManagerInterfaceV1::requestPickWindow,
+            &DDEShellManagerInterfaceV1::PickerCreated,
             this,
             &Helper::handleWindowPicker);
     connect(m_ddeShellV1,
@@ -1820,7 +1888,56 @@ void Helper::init(Treeland::Treeland *treeland)
     m_shellHandler->createComponent(engine, m_renderWindow->contentItem());
 
     m_foreignToplevel = m_server->attach<WForeignToplevel>();
+    connect(m_foreignToplevel, &WForeignToplevel::requestActivate, this,
+            [this](WToplevelSurface *surface) {
+                if (auto *wrapper = m_rootSurfaceContainer->getSurface(surface))
+                    forceActivateSurface(wrapper, Qt::OtherFocusReason);
+            });
+    connect(m_foreignToplevel, &WForeignToplevel::requestMaximize, this,
+            [this](WToplevelSurface *surface, bool maximized) {
+                if (auto *wrapper = m_rootSurfaceContainer->getSurface(surface)) {
+                    if (maximized)
+                        wrapper->maximize();
+                    else
+                        wrapper->unmaximize();
+                }
+            });
+    connect(m_foreignToplevel, &WForeignToplevel::requestMinimize, this,
+            [this](WToplevelSurface *surface, bool minimized) {
+                auto *wrapper = m_rootSurfaceContainer->getSurface(surface);
+                if (!wrapper)
+                    return;
+                if (showDesktopState() == ShowDesktopInterfaceV1::State::Show) {
+                    forceActivateSurface(wrapper);
+                } else if (minimized) {
+                    wrapper->minimize();
+                } else {
+                    wrapper->restoreFromMinimized();
+                }
+            });
+    connect(m_foreignToplevel, &WForeignToplevel::requestFullscreen, this,
+            [this](WToplevelSurface *surface, bool fullscreen) {
+                if (auto *wrapper = m_rootSurfaceContainer->getSurface(surface)) {
+                    if (fullscreen)
+                        wrapper->enterFullscreen();
+                    else
+                        wrapper->leaveFullscreen();
+                }
+            });
+    connect(m_foreignToplevel, &WForeignToplevel::requestClose, this,
+            [this](WToplevelSurface *surface) {
+                if (auto *wrapper = m_rootSurfaceContainer->getSurface(surface))
+                    wrapper->close();
+            });
     m_extForeignToplevelListV1 = m_server->attach<WExtForeignToplevelListV1>();
+    m_relativePointerManager = m_server->attach<WRelativePointerManagerV1>();
+    auto connectSeat = [this](WSeat *seat) {
+        connect(seat, &WSeat::relativePointerMotion,
+                this, [this, seat](uint32_t ts, QPointF d, QPointF u) {
+                    m_relativePointerManager->sendRelativeMotion(seat, ts, d, u);
+                });
+    };
+    connect(m_seatManager, &SeatsManager::seatAdded, this, connectSeat);
 
     connect(m_shellHandler,
             &ShellHandler::surfaceWrapperAdded,
@@ -1845,7 +1962,8 @@ void Helper::init(Treeland::Treeland *treeland)
             m_sessionManager,
             &SessionManager::syncActiveSessionXWaylandPrimaryOutput);
     m_wallpaperColorV1 = m_server->attach<WallpaperColorInterfaceV1>();
-    m_windowManagementInterfaceV1 = m_server->attach<WindowManagementInterfaceV1>();
+    m_showDesktopInterfaceV1 = m_server->attach<ShowDesktopInterfaceV1>();
+    m_xWindowControlInterfaceV1 = m_server->attach<XWindowControlInterfaceV1>();
     m_virtualOutputInterfaceV1 = m_server->attach<VirtualOutputManagerInterfaceV1>();
 
     auto captureManagerV1 = m_server->attach<CaptureManagerV1>();
@@ -1864,6 +1982,11 @@ void Helper::init(Treeland::Treeland *treeland)
             }
         });
     m_personalizationInterfaceV1 = m_server->attach<PersonalizationManagerInterfaceV1>();
+
+    // New protocols (treeland-protocols 0.6.0)
+    m_appearanceInterfaceV1 = m_server->attach<AppearanceInterfaceV1>();
+    m_appearanceManagerInterfaceV1 = m_server->attach<AppearanceManagerInterfaceV1>();
+    m_decorationInterfaceV1 = m_server->attach<DecorationManagerInterfaceV1>();
 
     auto updateCurrentUser = [this] {
         m_config.reset(TreelandUserConfig::createByName("org.deepin.dde.treeland.user",
@@ -1890,7 +2013,7 @@ void Helper::init(Treeland::Treeland *treeland)
         m_inputManager->setupSeatUserConfig(m_userModel->currentUserName());
         auto onConfigInitialized = [this] {
             m_sessionManager->syncActiveSessionCursorSettings();
-            syncPaletteTypeWithWindowThemeType(m_config->windowThemeType());
+            syncPaletteTypeWithWindowColorScheme(m_config->windowColorScheme());
             m_wallpaperManager->updateWallpaperConfig();
             tryInitRemoteSource();
             //TODO: Isolate workspaces for different users to prevent them from sharing the same one.
@@ -1915,8 +2038,8 @@ void Helper::init(Treeland::Treeland *treeland)
 
     updateCurrentUser();
 
-    connect(m_windowManagementInterfaceV1,
-            &WindowManagementInterfaceV1::desktopStateChanged,
+    connect(m_showDesktopInterfaceV1,
+            &ShowDesktopInterfaceV1::desktopStateChanged,
             this,
             &Helper::onShowDesktop);
 
@@ -1929,14 +2052,6 @@ void Helper::init(Treeland::Treeland *treeland)
             &VirtualOutputManagerInterfaceV1::destroyVirtualOutput,
             this,
             &Helper::onRestoreCopyOutput);
-
-    connect(m_rootSurfaceContainer, &RootSurfaceContainer::primaryOutputChanged, this, [this]() {
-        if (m_rootSurfaceContainer->primaryOutput()) {
-            if (m_lockScreen) {
-                m_lockScreen->setPrimaryOutputName(m_rootSurfaceContainer->primaryOutput()->output()->name());
-            }
-        }
-    });
 
     qmlRegisterUncreatableType<Personalization>("Treeland.Protocols",
                                                 1,
@@ -1963,11 +2078,12 @@ void Helper::init(Treeland::Treeland *treeland)
 
     // Initialize seats from configuration
     m_primarySeat =
-        m_seatManager->initializeFromConfig("/etc/deepin/treeland/seats.json", m_server);
+        m_seatManager->initializeFromConfig(QStringLiteral(TREELAND_SYSCONFDIR "/seats.json"), m_server);
     if (!m_primarySeat) {
         qCCritical(lcTlCore) << "Failed to initialize seats!";
         return;
     }
+
 
     // Setup all seats (cursor, keyboard focus, event filter)
     m_seatManager->setupAllSeats(m_renderWindow,
@@ -2034,6 +2150,8 @@ void Helper::init(Treeland::Treeland *treeland)
     }
     if (!wlr_subcompositor_create(m_server->handle()))
         qCCritical(lcTlCore) << "Failed to create subcompositor";
+    if (!wlr_presentation_create(m_server->handle(), m_backend->handle(), 2))
+        qCCritical(lcTlCore) << "Failed to create presentation-time manager";
     if (!wlr_screencopy_manager_v1_create(m_server->handle()))
         qCCritical(lcTlCore) << "Failed to create screencopy manager";
     if (!wlr_ext_image_copy_capture_manager_v1_create(m_server->handle(), 1))
@@ -2051,6 +2169,8 @@ void Helper::init(Treeland::Treeland *treeland)
 
     if (!wlr_viewporter_create(m_server->handle()))
         qCCritical(lcTlCore) << "Failed to create viewporter";
+    if (!wlr_single_pixel_buffer_manager_v1_create(m_server->handle()))
+        qCCritical(lcTlCore) << "Failed to create single pixel buffer manager";
     m_renderWindow->init(m_renderer, m_allocator);
 
     m_xwaylandOutputManager =
@@ -2117,6 +2237,8 @@ void Helper::init(Treeland::Treeland *treeland)
 
     m_server->attach<WRemoteSubsurfaceManagerV1>();
     m_server->attach<WCursorShapeManagerV1>();
+    m_pointerConstraintsV1 = m_server->attach<WPointerConstraintsV1>();
+    m_pointerConstraintsManager = new PointerConstraintsManager(m_pointerConstraintsV1, this);
     wlr_fractional_scale_manager_v1_create(m_server->handle(), WLR_FRACTIONAL_SCALE_V1_VERSION);
     wlr_data_control_manager_v1_create(m_server->handle());
     wlr_ext_data_control_manager_v1_create(m_server->handle(), EXT_DATA_CONTROL_MANAGER_V1_VERSION);
@@ -2190,7 +2312,7 @@ void Helper::init(Treeland::Treeland *treeland)
                 }
             });
 
-    m_screensaverInterfaceV1 = m_server->attach<ScreensaverInterfaceV1>();
+    m_screensaverInterfaceV2 = m_server->attach<ScreensaverInterfaceV2>();
 
     m_outputPowerManager = wlr_output_power_manager_v1_create(m_server->handle());
 
@@ -2226,6 +2348,7 @@ void Helper::init(Treeland::Treeland *treeland)
             &Treeland::Treeland::SessionChanged,
             m_shortcutManager,
             &ShortcutManagerV2::onSessionChanged);
+    m_shortcutManager->onSessionChanged();
     auto shortcutControl = m_shortcutManager->controller();
     auto *shortcutRunner = new ShortcutRunner(shortcutControl);
     connect(shortcutControl,
@@ -2256,6 +2379,7 @@ void Helper::init(Treeland::Treeland *treeland)
             &InputManager::onKeyboardSettingsCreated);
 
     m_keyboardStateNotifyManagerInterfaceV1 = m_server->attach<TreelandKeyboardStateNotifyManagerInterfaceV1>();
+    m_keyboardShortcutsInhibitManagerV1 = m_server->attach<KeyboardShortcutsInhibitManagerV1>();
 
 #if TREELANDCONFIG_DCONFIG_FILE_VERSION_MINOR > 0
     if (m_globalConfig->isInitializeSucceeded()) {
@@ -2282,7 +2406,10 @@ WSeat *Helper::getSeatForEvent(QInputEvent *event) const
     return m_seatManager->getSeatForEvent(event);
 }
 
-void Helper::activateSurface(SurfaceWrapper *wrapper, Qt::FocusReason reason, WSeat *seat)
+void Helper::activateSurface(SurfaceWrapper *wrapper,
+                             Qt::FocusReason reason,
+                             WSeat *seat,
+                             bool raise)
 {
     if (wrapper && wrapper->isIMCandidatePanel())
         return;
@@ -2318,7 +2445,7 @@ void Helper::activateSurface(SurfaceWrapper *wrapper, Qt::FocusReason reason, WS
     }
 
     if (!wrapper || wrapper->hasActiveCapability()) {
-        setActivatedSurface(wrapper, seat);
+        setActivatedSurface(wrapper, seat, raise);
     } else {
         qCCritical(lcTlShell)
             << "Trying to activate a surface which doesn't have ActiveCapability!";
@@ -2378,6 +2505,11 @@ void Helper::forceActivateSurface(SurfaceWrapper *wrapper, Qt::FocusReason reaso
 RootSurfaceContainer *Helper::rootSurfaceContainer() const
 {
     return m_rootSurfaceContainer;
+}
+
+WServer *Helper::server() const
+{
+    return m_server;
 }
 
 void Helper::fakePressSurfaceBottomRightToReszie(SurfaceWrapper *surface)
@@ -2576,6 +2708,15 @@ bool Helper::beforeDisposeEvent(WSeat *seat, QWindow *targetWindow, QInputEvent 
                    || event->type() == QEvent::TouchEnd) {
             m_rootSurfaceContainer->endMoveResizeForSeat(seat);
         }
+    }
+
+    // Suppress compositor shortcuts when a keyboard shortcuts inhibitor is active
+    if (m_currentMode == CurrentMode::Normal) {
+        auto *focusSurface = seat->keyboardFocusSurface();
+        if (focusSurface
+            && m_keyboardShortcutsInhibitManagerV1->isInhibited(seat->handle(),
+                                                                focusSurface->handle()))
+            return false;
     }
 
     // Capture mode: intercept key events before dispatchKeyEvent
@@ -2890,7 +3031,7 @@ SurfaceWrapper *Helper::activatedSurface() const
     return seatContainer ? seatContainer->activatedSurface() : nullptr;
 }
 
-void Helper::setActivatedSurface(SurfaceWrapper *newActivateSurface, WSeat *seat)
+void Helper::setActivatedSurface(SurfaceWrapper *newActivateSurface, WSeat *seat, bool raise)
 {
     if (!m_rootSurfaceContainer) {
         qCWarning(lcTlCore) << "Cannot set activated surface: root surface container is null";
@@ -2918,19 +3059,20 @@ void Helper::setActivatedSurface(SurfaceWrapper *newActivateSurface, WSeat *seat
 
     if (newActivateSurface) {
         Q_ASSERT(newActivateSurface->showOnWorkspace(workspace()->current()->id()));
-        newActivateSurface->stackToLast();
-        if (newActivateSurface->type() == SurfaceWrapper::Type::XWayland) {
-            auto xwaylandSurface =
-                qobject_cast<WXWaylandSurface *>(newActivateSurface->shellSurface());
-            Q_ASSERT(!xwaylandSurface->isBypassManager());
-            xwaylandSurface->restack(nullptr, WXWaylandSurface::XCB_STACK_MODE_ABOVE);
+        if (raise) {
+            newActivateSurface->stackToLast();
+            if (newActivateSurface->type() == SurfaceWrapper::Type::XWayland) {
+                auto xwaylandSurface =
+                    qobject_cast<WXWaylandSurface *>(newActivateSurface->shellSurface());
+                Q_ASSERT(!xwaylandSurface->isBypassManager());
+                xwaylandSurface->restack(nullptr, WXWaylandSurface::XCB_STACK_MODE_ABOVE);
+            }
         }
     }
 
     if (newActivateSurface) {
-        if (m_showDesktop == WindowManagementInterfaceV1::DesktopState::Show) {
-            m_showDesktop = WindowManagementInterfaceV1::DesktopState::Normal;
-            m_windowManagementInterfaceV1->setDesktopState(WindowManagementInterfaceV1::DesktopState::Normal);
+        if (m_showDesktop == ShowDesktopInterfaceV1::State::Show) {
+            cancelShowDesktop(newActivateSurface);
             newActivateSurface->setHideByShowDesk(true);
             wasShowingDesktop = true;
         }
@@ -3257,7 +3399,7 @@ bool Helper::toggleDebugMenuBar()
     return ok;
 }
 
-WindowManagementInterfaceV1::DesktopState Helper::showDesktopState() const
+ShowDesktopInterfaceV1::State Helper::showDesktopState() const
 {
     return m_showDesktop;
 }
@@ -3265,17 +3407,6 @@ WindowManagementInterfaceV1::DesktopState Helper::showDesktopState() const
 WXdgOutputManager *Helper::xwaylandOutputManager() const
 {
     return m_xwaylandOutputManager;
-}
-
-bool Helper::isLaunchpad(WLayerSurface *surface) const
-{
-    if (!surface) {
-        return false;
-    }
-
-    auto scope = QString(surface->handle()->scope);
-
-    return scope == "dde-shell/launchpad";
 }
 
 void Helper::setLaunchpadMapped(WOutput *output, bool mapped)
@@ -3354,10 +3485,6 @@ void Helper::setLockScreenImpl(ILockScreen *impl)
         m_lockScreen->addOutput(output);
     }
 
-    if (auto primaryOutput = m_rootSurfaceContainer->primaryOutput()) {
-        m_lockScreen->setPrimaryOutputName(primaryOutput->output()->name());
-    }
-
     connect(m_lockScreen, &LockScreen::unlock, this, [this] {
         setCurrentMode(CurrentMode::Normal);
         setWorkspaceVisible(true);
@@ -3374,7 +3501,10 @@ void Helper::setLockScreenImpl(ILockScreen *impl)
         return;
     }
     if (CmdLine::ref().useLockScreen()) {
-        showLockScreen(false);
+        // Start in the undecided state: make the lock screen surface (wallpaper)
+        // visible but keep the login UI hidden until DDM decides (ShowGreeter /
+        // UserActivateMessage) or the fallback timeout in GreeterProxy fires.
+        m_lockScreen->setVisible(true);
     }
 #else
     Q_UNUSED(impl)
@@ -3389,6 +3519,10 @@ void Helper::setCurrentMode(CurrentMode mode)
     setBlockActivateSurface(mode != CurrentMode::Normal);
 
     m_currentMode = mode;
+
+    // Deactivate pointer constraints when leaving Normal mode (modal shell state).
+    if (m_currentMode != CurrentMode::Normal && m_pointerConstraintsManager)
+        m_pointerConstraintsManager->deactivateAll();
 
     Q_EMIT currentModeChanged();
 }
@@ -3408,7 +3542,10 @@ void Helper::showLockScreen(bool switchToGreeter)
     if (!isLockScreenAvailable()) {
         return;
     }
-    if (m_lockScreen->isLocked()) {
+    // LockScreen::isLocked() is isVisible(), which is also true in the
+    // undecided state (surface shown, not yet locked), so check the real
+    // lock state instead.
+    if (m_greeterProxy->isLocked()) {
         return;
     }
 
@@ -3482,23 +3619,32 @@ void Helper::handleWhellValueChanged(const QInputEvent *event)
     }
 }
 
+void Helper::cancelShowDesktop(SurfaceWrapper *excludeSurface)
+{
+    if (m_showDesktop != ShowDesktopInterfaceV1::State::Show)
+        return;
+    m_showDesktop = ShowDesktopInterfaceV1::State::Normal;
+    m_showDesktopInterfaceV1->setDesktopState(ShowDesktopInterfaceV1::State::Normal);
+    const auto &surfaces = getWorkspaceSurfaces();
+    for (auto &surface : surfaces) {
+        if (surface == excludeSurface)
+            continue;
+        if (!surface->isMinimized() && !surface->isVisible()) {
+            surface->setHideByShowDesk(true);
+            surface->minimize(/*onAnimation=*/ false);
+        }
+    }
+}
+
 void Helper::restoreFromShowDesktop(SurfaceWrapper *activeSurface)
 {
-    if (m_showDesktop == WindowManagementInterfaceV1::DesktopState::Show) {
-        m_showDesktop = WindowManagementInterfaceV1::DesktopState::Normal;
-        m_windowManagementInterfaceV1->setDesktopState(WindowManagementInterfaceV1::DesktopState::Normal);
-        if (activeSurface) {
-            activeSurface->restoreFromMinimized();
-        }
-        const auto &surfaces = getWorkspaceSurfaces();
-        for (auto &surface : surfaces) {
-            if (!surface->isMinimized() && !surface->isVisible()) {
-                surface->setHideByShowDesk(true);
-                surface->setSurfaceState(SurfaceWrapper::State::Minimized);
-            }
-        }
-        restoreShowDesktopFocus();
+    if (m_showDesktop != ShowDesktopInterfaceV1::State::Show)
+        return;
+    cancelShowDesktop(activeSurface);
+    if (activeSurface) {
+        activeSurface->restoreFromMinimized();
     }
+    restoreShowDesktopFocus();
 }
 
 Output *Helper::getOutputAtCursor() const

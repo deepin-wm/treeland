@@ -4,7 +4,7 @@
 #pragma once
 
 #include <wlr_fwd.h>
-#include "modules/foreign-toplevel/foreigntoplevelmanagerv1.h"
+#include "modules/foreign-toplevel/foreigntoplevelmanagerv2.h"
 
 #include <xcb/xcb.h>
 
@@ -31,7 +31,7 @@ class Workspace;
 class SurfaceContainer;
 class IMCandidatePanelManager;
 class QmlEngine;
-class ForeignToplevelManagerInterfaceV1;
+class ForeignToplevelManagerInterfaceV2;
 class PrelaunchSplash;
 class WineWindowStateManager;
 class WineWindowManager;
@@ -61,6 +61,7 @@ class AppIdResolverManager; // forward declare new protocol manager
 class WindowConfigStore;    // forward declare config store
 class TreelandWallpaperShellInterfaceV1;
 class TreelandWallpaperSurfaceInterfaceV1;
+class LayerShellExtensionManagerInterfaceV1;
 
 class ShellHandler : public QObject
 {
@@ -74,7 +75,7 @@ public:
     [[nodiscard]] SurfaceContainer *popupContainer() const;
     [[nodiscard]] SurfaceContainer *privilegedOverlayContainer() const;
     [[nodiscard]] RootSurfaceContainer *rootSurfaceContainer() const;
-    [[nodiscard]] ForeignToplevelManagerInterfaceV1 *foreignToplevel() const;
+    [[nodiscard]] ForeignToplevelManagerInterfaceV2 *foreignToplevel() const;
 
     void createComponent(QmlEngine *engine, QQuickItem *parentItem);
     void init(WAYLIB_SERVER_NAMESPACE::WServer *server, WAYLIB_SERVER_NAMESPACE::WSeat *seat);
@@ -108,6 +109,7 @@ private Q_SLOTS:
     void onXdgPopupSurfaceRemoved(WAYLIB_SERVER_NAMESPACE::WXdgPopupSurface *surface);
 
     void onXWaylandSurfaceAdded(WAYLIB_SERVER_NAMESPACE::WXWaylandSurface *surface);
+    void onXWaylandSurfaceRemoved(WAYLIB_SERVER_NAMESPACE::WXWaylandSurface *surface);
 
     void onLayerSurfaceAdded(WAYLIB_SERVER_NAMESPACE::WLayerSurface *surface);
     void onLayerSurfaceRemoved(WAYLIB_SERVER_NAMESPACE::WLayerSurface *surface);
@@ -117,11 +119,11 @@ private Q_SLOTS:
     void onDockPreview(std::vector<SurfaceWrapper *> surfaces,
                        WAYLIB_SERVER_NAMESPACE::WSurface *target,
                        QPoint pos,
-                       ForeignToplevelManagerInterfaceV1::PreviewDirection direction);
+                       ForeignToplevelManagerInterfaceV2::PreviewDirection direction);
     void onDockPreviewTooltip(QString tooltip,
                               WAYLIB_SERVER_NAMESPACE::WSurface *target,
                               QPoint pos,
-                              ForeignToplevelManagerInterfaceV1::PreviewDirection direction);
+                              ForeignToplevelManagerInterfaceV2::PreviewDirection direction);
 
     void setupDockPreview();
     void onInputPopupSurfaceV2Removed(WAYLIB_SERVER_NAMESPACE::WInputPopupSurface *surface);
@@ -135,8 +137,6 @@ private:
     void registerSurfaceToForeignToplevel(SurfaceWrapper *wrapper);
     void handleDdeShellSurfaceAdded(WAYLIB_SERVER_NAMESPACE::WSurface *surface,
                                     SurfaceWrapper *wrapper);
-    void setResourceManagerAtom(WAYLIB_SERVER_NAMESPACE::WXWayland *xwayland,
-                                const QByteArray &value);
     void updateXWaylandDesktopProperties();
     void watchXWaylandDesktopOutput(Output *output);
     void watchXWaylandWorkspaceNames();
@@ -181,7 +181,7 @@ private:
     WineWindowStateManager *m_wineWindowStateManager = nullptr;
     WineWindowManager *m_wineWindowManager = nullptr;
     QList<WAYLIB_SERVER_NAMESPACE::WXWayland *> m_xwaylands;
-    ForeignToplevelManagerInterfaceV1 *m_treelandForeignToplevel = nullptr;
+    ForeignToplevelManagerInterfaceV2 *m_treelandForeignToplevel = nullptr;
 
     QPointer<RootSurfaceContainer> m_rootSurfaceContainer;
     LayerSurfaceContainer *m_backgroundContainer = nullptr;
@@ -206,5 +206,6 @@ private:
     QList<WAYLIB_SERVER_NAMESPACE::WToplevelSurface *> m_pendingAppIdResolveToplevels;
     // New protocol based app id resolver (optional, may be null if module not loaded)
     AppIdResolverManager *m_appIdResolverManager = nullptr;
+    LayerShellExtensionManagerInterfaceV1 *m_layerShellExtensionManagerInterfaceV1 = nullptr;
     WindowConfigStore *m_windowConfigStore = nullptr;
 };

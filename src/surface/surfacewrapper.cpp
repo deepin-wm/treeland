@@ -10,6 +10,7 @@
 #include "treelanduserconfig.hpp"
 #include "workspace/workspace.h"
 #include "wtoplevelsurface.h"
+#include "wxdgtoplevelsurface.h"
 
 #include <winputpopupsurfaceitem.h>
 #include <wlayersurface.h>
@@ -26,9 +27,12 @@
 #include <QColor>
 #include <QVariant>
 
+#include <memory>
+
 #define OPEN_ANIMATION 1
 #define CLOSE_ANIMATION 2
 #define ALWAYSONTOPLAYER 1
+#define ALWAYSONBOTTOMLAYER -1
 
 SurfaceWrapper::SurfaceWrapper(QmlEngine *qmlEngine,
                                WToplevelSurface *shellSurface,
@@ -46,6 +50,7 @@ SurfaceWrapper::SurfaceWrapper(QmlEngine *qmlEngine,
     , m_noTitleBar(true)
     , m_noCornerRadius(false)
     , m_alwaysOnTop(false)
+    , m_alwaysOnBottom(false)
     , m_skipSwitcher(false)
     , m_skipDockPreView(true)
     , m_skipMutiTaskView(false)
@@ -83,6 +88,7 @@ SurfaceWrapper::SurfaceWrapper(SurfaceWrapper *original, QQuickItem *parent)
     , m_noTitleBar(true)
     , m_noCornerRadius(false)
     , m_alwaysOnTop(false)
+    , m_alwaysOnBottom(false)
     , m_skipSwitcher(false)
     , m_skipDockPreView(true)
     , m_skipMutiTaskView(false)
@@ -153,6 +159,7 @@ SurfaceWrapper::SurfaceWrapper(QmlEngine *qmlEngine,
     , m_noTitleBar(true)
     , m_noCornerRadius(false)
     , m_alwaysOnTop(false)
+    , m_alwaysOnBottom(false)
     , m_skipSwitcher(false)
     , m_skipDockPreView(false)
     , m_skipMutiTaskView(false)
@@ -284,7 +291,6 @@ void SurfaceWrapper::setup()
                 &WSurfaceItem::bufferScaleChanged,
                 this,
                 &SurfaceWrapper::updateSurfaceSizeRatio);
-        updateSurfaceSizeRatio();
         break;
     }
     case Type::InputPopup:
@@ -300,9 +306,11 @@ void SurfaceWrapper::setup()
     }
 
     QQmlEngine::setContextForObject(m_surfaceItem, m_engine->rootContext());
-    m_surfaceItem->setDelegate(m_engine->surfaceContentComponent());
     m_surfaceItem->setResizeMode(WSurfaceItem::ManualResize);
+    // Must set the shell surface before instantiating the QML delegate.
     m_surfaceItem->setShellSurface(m_shellSurface);
+    updateSurfaceSizeRatio();
+    m_surfaceItem->setDelegate(m_engine->surfaceContentComponent());
     // Initialize focus policy even if focus capability state never toggles later.
     m_surfaceItem->setFocusPolicy(hasFocusCapability() ? Qt::StrongFocus : Qt::NoFocus);
 
@@ -346,6 +354,29 @@ void SurfaceWrapper::setup()
     QObject::connect(m_shellSurface->surface(), &WSurface::mappedChanged,
                                            this,
                                            &SurfaceWrapper::onMappedChanged);
+    if (m_type == Type::XdgToplevel) {
+        m_xdgToplevelCommitConnection = QObject::connect(m_shellSurface->surface(), &WSurface::commit, this, [this] {
+            if (!surface())
+                return;
+
+            if (surface()->mapped()) {
+                QObject::disconnect(m_xdgToplevelCommitConnection);
+                return;
+            }
+
+            auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+            if (!xdgSurface || !xdgSurface->isInitialized())
+                return;
+            if (xdgSurface->handle()->requested.fullscreen) {
+                setSurfaceStateDirectly(State::Fullscreen);
+            } else if (xdgSurface->handle()->requested.maximized && isMaximizable()) {
+                setSurfaceStateDirectly(State::Maximized);
+            } else if (m_surfaceState == State::Maximized || m_surfaceState == State::Fullscreen) {
+                setSurfaceStateDirectly(State::Normal);
+            }
+            QObject::disconnect(m_xdgToplevelCommitConnection);
+        });
+    }
 
     Q_EMIT surfaceItemCreated();
 
@@ -410,6 +441,25 @@ void SurfaceWrapper::setup()
                 [this, xwaylandSurfaceItem]() {
                     if (m_xwaylandPositionFromSurface)
                         moveNormalGeometryInOutput(xwaylandSurfaceItem->implicitPosition());
+                });
+
+        connect(xwaylandSurface,
+                &WXWaylandSurface::requestConfigure,
+                this,
+                [this, xwaylandSurface, xwaylandSurfaceItem]() {
+                    const auto flags = xwaylandSurface->requestConfigureFlags();
+                    if (!flags.testAnyFlags(WXWaylandSurface::XCB_CONFIG_WINDOW_SIZE))
+                        return;
+
+                    const qreal ratio = xwaylandSurfaceItem->surfaceSizeRatio();
+                    const QSizeF paddings(xwaylandSurfaceItem->leftPadding()
+                                              + xwaylandSurfaceItem->rightPadding(),
+                                          xwaylandSurfaceItem->topPadding()
+                                              + xwaylandSurfaceItem->bottomPadding());
+                    const QSizeF requestedSize = QSizeF(xwaylandSurface->requestConfigureGeometry().size())
+                        / ratio + paddings;
+
+                    setSize(alignGeometryToPixelGrid(QRectF(position(), requestedSize)).size());
                 });
 
         connect(this, &QQuickItem::xChanged, xwaylandSurface, [this, xwaylandSurfaceItem]() {
@@ -479,7 +529,16 @@ void SurfaceWrapper::setup()
                     updateX11SkipFlags();
                     updateSizeCapabilities();
                 });
+        connect(xwaylandSurface,
+                &WXWaylandSurface::aboveChanged,
+                this,
+                &SurfaceWrapper::updateXWaylandStackingState);
+        connect(xwaylandSurface,
+                &WXWaylandSurface::belowChanged,
+                this,
+                &SurfaceWrapper::updateXWaylandStackingState);
         updateX11SkipFlags();
+        updateXWaylandStackingState();
     }
     // Connect DConfig windowRadius change so QML bindings re-evaluate radius()
     if (m_type == Type::XdgToplevel || m_type == Type::XWayland) {
@@ -592,11 +651,25 @@ void SurfaceWrapper::syncPrelaunchMappedState()
         m_prelaunchOutputs.clear();
     }
 
-    if (auto *xwaylandSurface = qobject_cast<WXWaylandSurface *>(m_shellSurface.data())) {
-        if (xwaylandSurface->handle()->fullscreen) {
+    const bool fullscreenRequested = [this] {
+        if (auto *surface = qobject_cast<WXWaylandSurface *>(m_shellSurface.data()))
+            return surface->handle()->fullscreen;
+        if (auto *surface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data()))
+            return surface->handle()->requested.fullscreen;
+        return false;
+    }();
+    const bool maximizeRequested = [this] {
+        if (auto *surface = qobject_cast<WXWaylandSurface *>(m_shellSurface.data()))
+            return surface->handle()->maximized_horz && surface->handle()->maximized_vert;
+        if (auto *surface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data()))
+            return surface->handle()->requested.maximized;
+        return false;
+    }();
+
+    if (m_type == Type::XWayland || m_type == Type::XdgToplevel) {
+        if (fullscreenRequested) {
             setSurfaceStateDirectly(State::Fullscreen);
-        } else if ((xwaylandSurface->handle()->maximized_horz && xwaylandSurface->handle()->maximized_vert) &&
-                   isMaximizable()) {
+        } else if (maximizeRequested && isMaximizable()) {
             setSurfaceStateDirectly(State::Maximized);
         }
 
@@ -865,7 +938,7 @@ void SurfaceWrapper::setMaximizedGeometry(const QRectF &newMaximizedGeometry)
     // to avoid incorrect sizing of Xwayland windows.
     updateSurfaceSizeRatio();
 
-    if (m_surfaceState == State::Maximized) {
+    if (m_surfaceState == State::Maximized && !m_geometryAnimation) {
         setPosition(newMaximizedGeometry.topLeft());
         resize(newMaximizedGeometry.size());
     } else if (m_pendingState == State::Maximized && m_geometryAnimation) {
@@ -892,7 +965,7 @@ void SurfaceWrapper::setFullscreenGeometry(const QRectF &newFullscreenGeometry)
     // to avoid incorrect sizing of Xwayland windows.
     updateSurfaceSizeRatio();
 
-    if (m_surfaceState == State::Fullscreen) {
+    if (m_surfaceState == State::Fullscreen && !m_geometryAnimation) {
         setPosition(newFullscreenGeometry.topLeft());
         resize(newFullscreenGeometry.size());
     } else if (m_pendingState == State::Fullscreen && m_geometryAnimation) {
@@ -1046,27 +1119,66 @@ SurfaceWrapper::State SurfaceWrapper::surfaceState() const
     return m_surfaceState;
 }
 
-bool SurfaceWrapper::checkSetSurfaceState(State newSurfaceState)
+bool SurfaceWrapper::checkSetSurfaceState(State newSurfaceState, bool allowRetarget)
 {
     if (m_wrapperAboutToRemove)
         return false;
 
-    if (m_geometryAnimation)
+    if (m_geometryAnimation && !allowRetarget)
         return false;
 
-    if (m_surfaceState == newSurfaceState)
+    const State currentState = m_geometryAnimation ? m_pendingState : m_surfaceState;
+    if (currentState == newSurfaceState)
         return false;
 
-    if (container()->filterSurfaceStateChange(this, newSurfaceState, m_surfaceState))
+    if (container()->filterSurfaceStateChange(this, newSurfaceState, currentState))
         return false;
 
     return true;
 }
 
+bool SurfaceWrapper::shouldUpdateNormalGeometry() const
+{
+    if (!isNormal() || m_geometryAnimation)
+        return false;
+
+    auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+    if (!xdgSurface || !surface())
+        return true;
+
+    if (!surface()->mapped()) {
+        return !xdgSurface->handle()->requested.maximized
+            && !xdgSurface->handle()->requested.fullscreen;
+    }
+
+    return !xdgSurface->handle()->current.maximized
+        && !xdgSurface->handle()->current.fullscreen;
+}
+
+void SurfaceWrapper::applySurfaceStateWithoutGeometry(State state)
+{
+    if (state == State::Normal && m_type == Type::XdgToplevel) {
+        m_shellSurface->resize(QSize(0, 0));
+    }
+
+    doSetSurfaceState(state);
+}
+
 void SurfaceWrapper::setSurfaceState(State newSurfaceState)
 {
-    if (!checkSetSurfaceState(newSurfaceState))
+    if (!checkSetSurfaceState(newSurfaceState, true))
         return;
+
+    // A client can request the next state after the shell state has been
+    // acknowledged, while the corresponding geometry animation is still
+    // running. Retarget the transition instead of silently dropping the
+    // request until the visual animation finishes.
+    abortGeometryAnimation();
+
+    if (!isVisible()) {
+        setSurfaceStateDirectly(newSurfaceState);
+        return;
+    }
 
     const QRectF targetGeometry = targetGeometryForState(newSurfaceState);
 
@@ -1074,7 +1186,7 @@ void SurfaceWrapper::setSurfaceState(State newSurfaceState)
         startStateChangeAnimation(newSurfaceState, targetGeometry);
     } else {
         abortGeometryAnimation();
-        doSetSurfaceState(newSurfaceState);
+        applySurfaceStateWithoutGeometry(newSurfaceState);
     }
 }
 
@@ -1090,7 +1202,7 @@ void SurfaceWrapper::setSurfaceStateDirectly(State newSurfaceState)
         if (!applySurfaceStateGeometry(newSurfaceState, targetGeometry))
             return;
     } else {
-        doSetSurfaceState(newSurfaceState);
+        applySurfaceStateWithoutGeometry(newSurfaceState);
     }
 }
 
@@ -1147,7 +1259,7 @@ bool SurfaceWrapper::isMaximized() const
 
 bool SurfaceWrapper::isMinimized() const
 {
-    return m_surfaceState == State::Minimized;
+    return m_minimized;
 }
 
 bool SurfaceWrapper::isTiling() const
@@ -1171,6 +1283,11 @@ void SurfaceWrapper::destroy()
     if (!isWindowAnimationRunning())
         deleteLater();
     // else delete this in Animation(for window close animation) finish
+}
+
+bool SurfaceWrapper::isAboutToRemove() const
+{
+    return m_wrapperAboutToRemove;
 }
 
 bool SurfaceWrapper::acceptKeyboardFocus() const
@@ -1217,6 +1334,22 @@ bool SurfaceWrapper::isInputPopupLike() const
 bool SurfaceWrapper::isIMCandidatePanel() const
 {
     return m_isIMCandidatePanel;
+}
+
+bool SurfaceWrapper::isLaunchpad() const
+{
+    if (type() != Type::Layer)
+        return false;
+    auto layerSurface = qobject_cast<WLayerSurface *>(m_shellSurface);
+    return layerSurface && layerSurface->scope() == QStringLiteral("dde-shell/launchpad");
+}
+
+bool SurfaceWrapper::isQuickLaunchpad() const
+{
+    if (type() != Type::Layer)
+        return false;
+    auto layerSurface = qobject_cast<WLayerSurface *>(m_shellSurface);
+    return layerSurface && layerSurface->scope() == QStringLiteral("dde-shell/quick-launchpad");
 }
 
 void SurfaceWrapper::setIMCandidatePanel(bool isIMCandidatePanel)
@@ -1386,7 +1519,7 @@ void SurfaceWrapper::geometryChange(const QRectF &newGeo, const QRectF &oldGeome
     if (m_container && m_container->filterSurfaceGeometryChanged(this, newGeometry, oldGeometry))
         return;
 
-    if (isNormal() && !m_geometryAnimation) {
+    if (shouldUpdateNormalGeometry()) {
         setNormalGeometry(newGeometry);
     }
 
@@ -1450,6 +1583,7 @@ void SurfaceWrapper::createNewOrClose(uint direction)
     }
 
     if (m_windowAnimation) {
+        restackWindowAnimationAbove();
         if (Helper::instance()->noAnimation()) {
             if (direction == OPEN_ANIMATION) {
                 onShowAnimationFinished();
@@ -1502,35 +1636,16 @@ void SurfaceWrapper::doSetSurfaceState(State newSurfaceState)
         return;
     }
 
-    const bool wasMinimized = (m_surfaceState == State::Minimized);
-    const bool willBeMinimized = (newSurfaceState == State::Minimized);
-    const bool needMinimizeLinkage = (wasMinimized != willBeMinimized);
-
-    setVisibleDecoration(newSurfaceState == State::Minimized || newSurfaceState == State::Normal);
+    setVisibleDecoration(newSurfaceState == State::Normal);
     setNoCornerRadius(newSurfaceState == State::Maximized || newSurfaceState == State::Fullscreen
                       || newSurfaceState == State::Tiling);
 
     m_previousSurfaceState.setValueBypassingBindings(m_surfaceState);
     m_surfaceState.setValueBypassingBindings(newSurfaceState);
 
-    // Keep modal/parent minimize linkage ahead of this surface's own state change
-    // so focus fallback never sees the parent in the old state first.
-    if (needMinimizeLinkage && modal() && m_parentSurface) {
-        if (willBeMinimized && !m_parentSurface->isMinimized()) {
-            m_parentSurface->minimize(false);
-        } else if (!willBeMinimized && m_parentSurface->isMinimized()) {
-            m_parentSurface->restoreFromMinimized(false);
-        }
-    }
-
     switch (m_previousSurfaceState.value()) {
     case State::Maximized:
         m_shellSurface->setMaximize(false);
-        break;
-    case State::Minimized:
-        m_shellSurface->setMinimize(false);
-        updateFocusControlState(FocusControlState::UnMinimized, true);
-        updateHasActiveCapability(ActiveControlState::UnMinimized, true);
         break;
     case State::Fullscreen:
         m_shellSurface->setFullScreen(false);
@@ -1548,11 +1663,6 @@ void SurfaceWrapper::doSetSurfaceState(State newSurfaceState)
     case State::Maximized:
         m_shellSurface->setMaximize(true);
         break;
-    case State::Minimized:
-        updateFocusControlState(FocusControlState::UnMinimized, false);
-        updateHasActiveCapability(ActiveControlState::UnMinimized, false);
-        m_shellSurface->setMinimize(true);
-        break;
     case State::Fullscreen:
         m_shellSurface->setFullScreen(true);
         break;
@@ -1566,19 +1676,6 @@ void SurfaceWrapper::doSetSurfaceState(State newSurfaceState)
     m_surfaceState.notify();
     updateTitleBar();
     updateVisible();
-
-    if (needMinimizeLinkage) {
-        for (SurfaceWrapper *child : std::as_const(m_subSurfaces)) {
-            if (willBeMinimized && child->modal())
-                continue; // Modal children stay visible when parent is minimized.
-            if (child->isMinimized() != willBeMinimized) {
-                if (willBeMinimized)
-                    child->minimize(false);
-                else
-                    child->restoreFromMinimized(false);
-            }
-        }
-    }
 }
 
 void SurfaceWrapper::onAnimationReady()
@@ -1597,6 +1694,11 @@ void SurfaceWrapper::onAnimationFinished()
 {
     setXwaylandPositionFromSurface(true);
     Q_ASSERT(m_geometryAnimation);
+    // The ready signal is driven by ShaderEffectSource's scheduled update.
+    // Software renderers may complete the geometry animation without issuing
+    // that update, so commit the pending state here as an idempotent fallback.
+    if (m_surfaceState != m_pendingState)
+        applySurfaceStateGeometry(m_pendingState, m_pendingGeometry);
     abortGeometryAnimation();
 }
 
@@ -1804,31 +1906,173 @@ void SurfaceWrapper::setRadius(qreal newRadius)
     Q_EMIT radiusChanged();
 }
 
+// ---------------------------------------------------------------------------
+// Per-window SSD customization (treeland-decoration-unstable-v1)
+// ---------------------------------------------------------------------------
+
+qreal SurfaceWrapper::shadowBlurRadius() const
+{
+    return m_shadowBlurRadius;
+}
+
+qreal SurfaceWrapper::shadowOffsetX() const
+{
+    return m_shadowOffsetX;
+}
+
+qreal SurfaceWrapper::shadowOffsetY() const
+{
+    return m_shadowOffsetY;
+}
+
+QColor SurfaceWrapper::shadowColor() const
+{
+    return m_shadowColor;
+}
+
+bool SurfaceWrapper::shadowVisible() const
+{
+    return m_shadowVisible;
+}
+
+void SurfaceWrapper::setShadowValues(qreal blur, qreal offsetX, qreal offsetY, const QColor &color)
+{
+    if (qFuzzyCompare(m_shadowBlurRadius, blur) && qFuzzyCompare(m_shadowOffsetX, offsetX)
+        && qFuzzyCompare(m_shadowOffsetY, offsetY) && m_shadowColor == color)
+        return;
+    m_shadowBlurRadius = blur;
+    m_shadowOffsetX = offsetX;
+    m_shadowOffsetY = offsetY;
+    m_shadowColor = color;
+    Q_EMIT shadowChanged();
+}
+
+void SurfaceWrapper::setShadowVisible(bool visible)
+{
+    if (m_shadowVisible == visible)
+        return;
+    m_shadowVisible = visible;
+    Q_EMIT shadowChanged();
+}
+
+qreal SurfaceWrapper::borderWidth() const
+{
+    return m_borderWidth;
+}
+
+QColor SurfaceWrapper::borderColor() const
+{
+    return m_borderColor;
+}
+
+bool SurfaceWrapper::borderVisible() const
+{
+    return m_borderVisible;
+}
+
+void SurfaceWrapper::setBorderValues(qreal width, const QColor &color)
+{
+    if (qFuzzyCompare(m_borderWidth, width) && m_borderColor == color)
+        return;
+    m_borderWidth = width;
+    m_borderColor = color;
+    Q_EMIT borderChanged();
+}
+
+void SurfaceWrapper::setBorderVisible(bool visible)
+{
+    if (m_borderVisible == visible)
+        return;
+    m_borderVisible = visible;
+    Q_EMIT borderChanged();
+}
+
 void SurfaceWrapper::minimize(bool onAnimation)
 {
-    if (m_surfaceState == State::Minimized)
+    if (m_wrapperAboutToRemove)
         return;
-    setSurfaceState(State::Minimized);
+
+    if (m_minimized)
+        return;
+
+    // The parent container may reject state changes during interactive edge resize.
+    if (container()->filterSurfaceStateChange(this, m_surfaceState, m_surfaceState))
+        return;
+
+    abortGeometryAnimation();
+
+    m_minimized = true;
+
+    if (!m_shellSurface) {
+        updateVisible();
+        return;
+    }
+
+    // Keep modal/parent minimize linkage ahead of this surface's own state change
+    // so focus fallback never sees the parent in the old state first.
+    if (modal() && m_parentSurface && !m_parentSurface->isMinimized())
+        m_parentSurface->minimize(false);
+
+    m_shellSurface->setMinimize(true);
+    updateFocusControlState(FocusControlState::UnMinimized, false);
+    updateHasActiveCapability(ActiveControlState::UnMinimized, false);
+    updateVisible();
+
+    for (SurfaceWrapper *child : std::as_const(m_subSurfaces)) {
+        if (child->modal())
+            continue; // Modal children stay visible when parent is minimized.
+        if (!child->isMinimized())
+            child->minimize(false);
+    }
+
     if (onAnimation)
         startMinimizeAnimation(iconGeometry(), CLOSE_ANIMATION);
 }
 
 void SurfaceWrapper::restoreFromMinimized(bool onAnimation)
 {
-    if (m_surfaceState != State::Minimized && m_hideByshowDesk)
+    if (m_wrapperAboutToRemove)
+        return;
+
+    if (!m_minimized && m_hideByshowDesk)
         return;
     if (!m_hideByshowDesk)
         setHideByShowDesk(true);
 
-    doSetSurfaceState(m_previousSurfaceState);
+    m_minimized = false;
+
+    if (!m_shellSurface) {
+        updateVisible();
+    } else {
+        if (modal() && m_parentSurface && m_parentSurface->isMinimized())
+            m_parentSurface->restoreFromMinimized(false);
+
+        updateFocusControlState(FocusControlState::UnMinimized, true);
+        updateHasActiveCapability(ActiveControlState::UnMinimized, true);
+
+        m_shellSurface->setMinimize(false);
+        updateVisible();
+
+        for (SurfaceWrapper *child : std::as_const(m_subSurfaces)) {
+            if (child->isMinimized())
+                child->restoreFromMinimized(false);
+        }
+    }
+
     if (onAnimation)
         startMinimizeAnimation(iconGeometry(), OPEN_ANIMATION);
 }
 
 void SurfaceWrapper::maximize()
 {
-    if (m_surfaceState == State::Minimized || m_surfaceState == State::Fullscreen
-        || !isMaximizable())
+    if (m_type == Type::XdgToplevel && surface() && !surface()->mapped()) {
+        auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+        if (xdgSurface->isInitialized())
+            setSurfaceStateDirectly(State::Maximized);
+        return;
+    }
+
+    if (m_surfaceState == State::Fullscreen || !isMaximizable())
         return;
 
     setSurfaceState(State::Maximized);
@@ -1836,6 +2080,13 @@ void SurfaceWrapper::maximize()
 
 void SurfaceWrapper::unmaximize()
 {
+    if (m_type == Type::XdgToplevel && surface() && !surface()->mapped()) {
+        auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+        if (xdgSurface->isInitialized())
+            setSurfaceStateDirectly(State::Normal);
+        return;
+    }
+
     if (m_surfaceState != State::Maximized)
         return;
 
@@ -1850,16 +2101,65 @@ void SurfaceWrapper::toggleMaximized()
         maximize();
 }
 
-void SurfaceWrapper::enterFullscreen()
+void SurfaceWrapper::applyTileMode(TileMode mode, Output *output)
 {
-    if (m_surfaceState == State::Minimized)
+    if (mode == TileMode::None) {
+        cancelTileMode();
         return;
+    }
+
+    if (mode == TileMode::Maximize) {
+        // Use the cursor's output geometry, not the surface's current output,
+        // so maximize lands on the screen the user dragged to (matches preview).
+        if (output)
+            setMaximizedGeometry(output->validGeometry());
+        maximize();
+        return;
+    }
+
+    const QRectF geo = output ? output->tileGeometry(mode) : QRectF();
+    if (!geo.isValid())
+        return;
+
+    // Order matters: setTilingGeometry first so that a subsequent
+    // setSurfaceState(Tiling) reads the new m_tilingGeometry as its target.
+    setTilingGeometry(geo);
+    setSurfaceState(State::Tiling);
+}
+
+void SurfaceWrapper::cancelTileMode()
+{
+    setSurfaceStateDirectly(State::Normal);
+}
+
+void SurfaceWrapper::enterFullscreen(WOutput *targetOutput)
+{
+    if (m_type == Type::XdgToplevel && surface() && !surface()->mapped()) {
+        auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+        if (xdgSurface->isInitialized())
+            setSurfaceStateDirectly(State::Fullscreen);
+        return;
+    }
+
+    if (targetOutput) {
+        auto *helper = Helper::instance();
+        auto *target = helper ? helper->getOutput(targetOutput) : nullptr;
+        if (target && target != m_ownsOutput && target->isSource()) 
+            setOwnsOutput(target);
+    }
 
     setSurfaceState(State::Fullscreen);
 }
 
 void SurfaceWrapper::leaveFullscreen()
 {
+    if (m_type == Type::XdgToplevel && surface() && !surface()->mapped()) {
+        auto *xdgSurface = qobject_cast<WXdgToplevelSurface *>(m_shellSurface.data());
+        if (xdgSurface->isInitialized())
+            setSurfaceStateDirectly(m_previousSurfaceState);
+        return;
+    }
+
     if (m_surfaceState != State::Fullscreen)
         return;
 
@@ -1938,6 +2238,7 @@ bool SurfaceWrapper::stackBefore(QQuickItem *item)
     } while (false);
 
     updateSubSurfaceStacking();
+    restackWindowAnimationAbove();
     return true;
 }
 
@@ -1983,6 +2284,7 @@ bool SurfaceWrapper::stackAfter(QQuickItem *item)
     } while (false);
 
     updateSubSurfaceStacking();
+    restackWindowAnimationAbove();
     return true;
 }
 
@@ -2014,11 +2316,17 @@ void SurfaceWrapper::stackToFirst()
     }
 }
 
+void SurfaceWrapper::restackWindowAnimationAbove()
+{
+    if (m_windowAnimation && parentItem() && m_windowAnimation->parentItem() == parentItem())
+        m_windowAnimation->stackAfter(this);
+}
+
 void SurfaceWrapper::addSubSurface(SurfaceWrapper *surface)
 {
     Q_ASSERT(!surface->m_parentSurface);
     surface->m_parentSurface = this;
-    surface->updateExplicitAlwaysOnTop();
+    surface->updateStackingLayer();
     m_subSurfaces.append(surface);
     surface->ensureAboveParent();
 }
@@ -2027,7 +2335,7 @@ void SurfaceWrapper::removeSubSurface(SurfaceWrapper *surface)
 {
     Q_ASSERT(surface->m_parentSurface == this);
     surface->m_parentSurface = nullptr;
-    surface->updateExplicitAlwaysOnTop();
+    surface->updateStackingLayer();
     m_subSurfaces.removeOne(surface);
 }
 
@@ -2199,9 +2507,18 @@ void SurfaceWrapper::setAlwaysOnTop(bool alwaysOnTop)
     if (m_alwaysOnTop == alwaysOnTop)
         return;
     m_alwaysOnTop = alwaysOnTop;
-    updateExplicitAlwaysOnTop();
+    updateStackingLayer();
 
     Q_EMIT alwaysOnTopChanged();
+}
+
+void SurfaceWrapper::setAlwaysOnBottom(bool alwaysOnBottom)
+{
+    if (m_alwaysOnBottom == alwaysOnBottom)
+        return;
+
+    m_alwaysOnBottom = alwaysOnBottom;
+    updateStackingLayer();
 }
 
 bool SurfaceWrapper::showOnAllWorkspace() const
@@ -2248,6 +2565,8 @@ SurfaceWrapper *SurfaceWrapper::findModal() const
         return nullptr;
     for (auto *child : std::as_const(m_subSurfaces)) {
         if (child->m_wrapperAboutToRemove)
+            continue;
+        if (!child->surface() || !child->surface()->mapped())
             continue;
         if (child->modal()) {
             if (SurfaceWrapper *deepModal = child->findModal())
@@ -2303,6 +2622,7 @@ bool SurfaceWrapper::socketEnabled() const
 void SurfaceWrapper::updateSurfaceSizeRatio()
 {
     if (m_type == Type::XWayland && m_surfaceItem && window()) {
+        Q_ASSERT(shellSurface());
         const qreal targetScale = window()->effectiveDevicePixelRatio();
         if (m_surfaceItem->bufferScale() < targetScale)
             m_surfaceItem->setSurfaceSizeRatio(targetScale / m_surfaceItem->bufferScale());
@@ -2344,19 +2664,46 @@ void SurfaceWrapper::disableWindowAnimation(bool disable)
     m_windowAnimationEnabled = !disable;
 }
 
-void SurfaceWrapper::updateExplicitAlwaysOnTop()
+void SurfaceWrapper::updateStackingLayer()
 {
     int newExplicitAlwaysOnTop = m_alwaysOnTop;
-    if (m_parentSurface)
+    bool newExplicitAlwaysOnBottom = m_alwaysOnBottom;
+    if (m_parentSurface) {
         newExplicitAlwaysOnTop += m_parentSurface->m_explicitAlwaysOnTop;
+        newExplicitAlwaysOnBottom = newExplicitAlwaysOnBottom
+            || m_parentSurface->m_explicitAlwaysOnBottom;
+    }
 
-    if (m_explicitAlwaysOnTop == newExplicitAlwaysOnTop)
+    if (newExplicitAlwaysOnTop)
+        newExplicitAlwaysOnBottom = false;
+
+    if (m_explicitAlwaysOnTop == newExplicitAlwaysOnTop
+        && m_explicitAlwaysOnBottom == newExplicitAlwaysOnBottom)
         return;
 
     m_explicitAlwaysOnTop = newExplicitAlwaysOnTop;
-    setZ(m_explicitAlwaysOnTop ? ALWAYSONTOPLAYER : 0);
+    m_explicitAlwaysOnBottom = newExplicitAlwaysOnBottom;
+    setZ(m_explicitAlwaysOnTop ? ALWAYSONTOPLAYER
+                               : (m_explicitAlwaysOnBottom ? ALWAYSONBOTTOMLAYER : 0));
     for (const auto &sub : std::as_const(m_subSurfaces))
-        sub->updateExplicitAlwaysOnTop();
+        sub->updateStackingLayer();
+}
+
+void SurfaceWrapper::updateXWaylandStackingState()
+{
+    auto *xwaylandSurface = qobject_cast<WXWaylandSurface *>(m_shellSurface.data());
+    if (!xwaylandSurface)
+        return;
+
+    const bool above = xwaylandSurface->isAbove();
+    const bool below = !above && xwaylandSurface->isBelow();
+    setAlwaysOnBottom(below);
+    setAlwaysOnTop(above);
+    if (above) {
+        stackToLast();
+    } else if (below) {
+        stackToFirst();
+    }
 }
 
 void SurfaceWrapper::updateSizeCapabilities()

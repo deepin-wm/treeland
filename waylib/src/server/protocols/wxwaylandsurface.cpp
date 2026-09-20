@@ -78,7 +78,7 @@ void WXWaylandSurfacePrivate::init()
     });
     q->listeners()->add(&m_handle->events.request_fullscreen, this, [this, q] (void *) {
         if (handle()->fullscreen) {
-            Q_EMIT q->requestFullscreen();
+            Q_EMIT q->requestFullscreen(nullptr);
         } else {
             Q_EMIT q->requestCancelFullscreen();
         }
@@ -105,9 +105,15 @@ void WXWaylandSurfacePrivate::init()
                      [this, q] (wlr_xwayland_resize_event *event) {
         Q_EMIT q->requestResize(xwayland->seat(), WTools::toQtEdge(event->edges), 0);
     });
+    q->listeners()->add(&m_handle->events.request_above, this, [this, q] (void *) {
+        Q_EMIT q->aboveChanged(handle()->above);
+    });
+    q->listeners()->add(&m_handle->events.request_below, this, [this, q] (void *) {
+        Q_EMIT q->belowChanged(handle()->below);
+    });
     q->listeners()->add(&m_handle->events.set_override_redirect, q, &WXWaylandSurface::bypassManagerChanged);
     q->listeners()->add(&m_handle->events.set_geometry, q, &WXWaylandSurface::geometryChanged);
-    q->listeners()->add(&m_handle->events.set_hints, this, &WXWaylandSurfacePrivate::updateSizeHints);
+    q->listeners()->add(&m_handle->events.set_size_hints, this, &WXWaylandSurfacePrivate::updateSizeHints);
     q->listeners()->add(&m_handle->events.set_window_type, this, &WXWaylandSurfacePrivate::updateWindowTypes);
     q->listeners()->add(&m_handle->events.set_decorations, q, &WXWaylandSurface::decorationsFlagsChanged);
     q->listeners()->add(&m_handle->events.set_title, q, &WXWaylandSurface::titleChanged);
@@ -172,20 +178,27 @@ void WXWaylandSurfacePrivate::updateChildren()
 
 void WXWaylandSurfacePrivate::updateParent()
 {
+    W_Q(WXWaylandSurface);
+
     auto newParent = WXWaylandSurface::fromHandle(handle()->parent);
     if (parent == newParent)
         return;
 
     const bool hasParentChanged = (parent == nullptr) != (newParent == nullptr);
+    QObject::disconnect(parentSurfaceConnection);
     if (parent)
         parent->d_func()->updateChildren();
     parent = newParent;
-    if (parent)
+    if (parent) {
         parent->d_func()->updateChildren();
-
-    W_Q(WXWaylandSurface);
+        parentSurfaceConnection = QObject::connect(parent,
+                                                   &WToplevelSurface::surfaceChanged,
+                                                   q,
+                                                   &WToplevelSurface::parentSurfaceChanged);
+    }
 
     Q_EMIT q->parentXWaylandSurfaceChanged();
+    Q_EMIT q->parentSurfaceChanged();
 
     if (hasParentChanged)
         Q_EMIT q->isToplevelChanged();
@@ -285,6 +298,12 @@ WSurface *WXWaylandSurface::surface() const
     return d->surface;
 }
 
+WSurface *WXWaylandSurface::parentSurface() const
+{
+    W_DC(WXWaylandSurface);
+    return d->parent ? d->parent->surface() : nullptr;
+}
+
 wlr_xwayland_surface *WXWaylandSurface::handle() const
 {
     W_DC(WXWaylandSurface);
@@ -314,8 +333,10 @@ void WXWaylandSurfacePrivate::handleParentDestroyed(WXWaylandSurface *parent)
     // Mirrors what updateParent() would do once the native set_parent event
     // arrives (native parent is already NULL): the wrapper of the dying
     // parent is still alive here, so the QPointer comparison can proceed.
+    QObject::disconnect(parentSurfaceConnection);
     this->parent = nullptr;
     Q_EMIT q->parentXWaylandSurfaceChanged();
+    Q_EMIT q->parentSurfaceChanged();
     Q_EMIT q->isToplevelChanged();
 }
 
@@ -484,6 +505,24 @@ bool WXWaylandSurface::isBypassManager() const
 {
     W_DC(WXWaylandSurface);
     return d->handle()->override_redirect;
+}
+
+bool WXWaylandSurface::isAbove() const
+{
+    W_DC(WXWaylandSurface);
+    return d->handle()->above;
+}
+
+bool WXWaylandSurface::isBelow() const
+{
+    W_DC(WXWaylandSurface);
+    return d->handle()->below;
+}
+
+bool WXWaylandSurface::isModal() const
+{
+    W_DC(WXWaylandSurface);
+    return d->handle()->modal;
 }
 
 WXWaylandSurface::WindowTypes WXWaylandSurface::windowTypes() const

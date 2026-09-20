@@ -7,6 +7,7 @@
 #include "qwayland-server-treeland-remote-subsurface-unstable-v1.h"
 #include "wayliblogging.h"
 #include "wserver.h"
+#include "wscoplistener.h"
 #include "wsubsurface.h"
 #include "wsurface.h"
 
@@ -66,6 +67,11 @@ public:
         , m_surface(surface)
         , m_token(token)
     {
+        // WSurface follows a surface role and may be destroyed with an
+        // xdg_toplevel while the underlying wl_surface remains valid.
+        m_surfaceDestroyListener.init(&m_surface->events.destroy,
+                                      this,
+                                      &ExportedSurfaceContext::handleSurfaceDestroy);
     }
 
     ~ExportedSurfaceContext() override = default;
@@ -101,9 +107,12 @@ protected:
                                   const QString &parent_token) override;
 
 private:
+    void handleSurfaceDestroy();
+
     WRemoteSubsurfaceManagerV1Private *m_manager;
     wlr_surface *m_surface = nullptr;
     QString m_token;
+    WScopedListener m_surfaceDestroyListener;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +137,16 @@ public:
         , m_child(childExported)
         , m_parent(parentExported)
     {
+        // Mirror the wlroots scene subsurface tree pattern: listen to
+        // wlr_surface map/unmap events rather than WSurface::mappedChanged.
+        // These listeners live at the wlr_surface level and survive WSurface
+        // wrapper recreation, so no reconnection is ever needed.
+        if (auto *wlr = parentExported->surface()) {
+            m_parentMapListener.init(&wlr->events.map, this,
+                                     &RemoteSubsurfaceContext::recheckMapping);
+            m_parentUnmapListener.init(&wlr->events.unmap, this,
+                                       &RemoteSubsurfaceContext::recheckMapping);
+        }
     }
 
     ~RemoteSubsurfaceContext() override;
@@ -144,8 +163,11 @@ public:
 
     WSubsurface *subsurface() const { return m_subsurface; }
     void setSubsurface(WSubsurface *s) { m_subsurface = s; }
+    QPointF position() const { return m_position; }
 
     void invalidate() { m_manager = nullptr; }
+
+    void ensureSubsurface();
 
     void recheckMapping();
     void cascadeUnmap();
@@ -166,6 +188,9 @@ private:
     ExportedSurfaceContext *m_child = nullptr;
     ExportedSurfaceContext *m_parent = nullptr;
     QPointer<WSubsurface> m_subsurface;
+    QPointF m_position;
+    WScopedListener m_parentMapListener;
+    WScopedListener m_parentUnmapListener;
 };
 
 // ---------------------------------------------------------------------------
@@ -185,14 +210,14 @@ static inline QStringView shortToken(const QString &token)
 
 class WRemoteSubsurfaceManagerV1Private
     : public WObjectPrivate
-    , public QtWaylandServer::treeland_subsurface_manager_v1
+    , public QtWaylandServer::treeland_remote_subsurface_manager_v1
 {
     Q_DECLARE_PUBLIC(WRemoteSubsurfaceManagerV1)
 
 public:
     explicit WRemoteSubsurfaceManagerV1Private(WRemoteSubsurfaceManagerV1 *q)
         : WObjectPrivate(q)
-        , QtWaylandServer::treeland_subsurface_manager_v1()
+        , QtWaylandServer::treeland_remote_subsurface_manager_v1()
     {
     }
 
@@ -243,6 +268,13 @@ public:
         return false;
     }
 
+    // WSurface::addRemoteSubsurface() is private; this manager is a friend of
+    // WSurface, so expose a static wrapper so RemoteSubsurfaceContext can call it.
+    static WSubsurface *createRemoteSubsurface(WSurface *parent, wlr_surface *child)
+    {
+        return parent->addRemoteSubsurface(child);
+    }
+
     // Children list management (z-order, below vs above parent)
     QList<RemoteSubsurfaceContext *> childrenOf(ExportedSurfaceContext *parent) const
     {
@@ -264,6 +296,10 @@ public:
         if (!parentSurface || !childWlr)
             return;
 
+        // WSubsurface is destroyed together with the parent's WSurface.
+        // WSurface lifetime follows its surface role (remote_subsurface,
+        // xdg_toplevel, etc.). Recreating a remote parent's role requires
+        // recreating WSubsurface for its children.
         remote->setSubsurface(parentSurface->addRemoteSubsurface(childWlr));
     }
 
@@ -334,6 +370,14 @@ public:
         syncRemoteSubsurfaceOrder(parent);
     }
 
+    void placeChildBelowParentBottom(RemoteSubsurfaceContext *remote)
+    {
+        auto *parent = remote->parentExported();
+        removeChildFromOrder(remote);
+        parent->belowChildren.prepend(remote);
+        syncRemoteSubsurfaceOrder(parent);
+    }
+
     void placeChildAboveSibling(RemoteSubsurfaceContext *remote,
                                 RemoteSubsurfaceContext *siblingRemote)
     {
@@ -399,19 +443,6 @@ public:
         delete remote;
     }
 
-    static void safeDestroyExported(ExportedSurfaceContext *ctx)
-    {
-        if (!ctx)
-            return;
-        if (auto *res = ctx->resource()) {
-            if (res->handle) {
-                wl_resource_destroy(res->handle);
-                return;
-            }
-        }
-        delete ctx;
-    }
-
     // Cleanup
     void cleanupExportedContext(ExportedSurfaceContext *ctx)
     {
@@ -433,21 +464,6 @@ public:
             safeDestroyRemote(remote);
 
         unregisterExported(ctx);
-    }
-
-    // Track parent state changes so the child's mapping is re-evaluated.
-    // The child's own commits are handled by the wlroots role commit callback.
-    void trackCommits(RemoteSubsurfaceContext *remote)
-    {
-        auto *parentSurface = wsurfaceFrom(remote->parentExported());
-        if (parentSurface) {
-            QObject::connect(parentSurface, &WSurface::commit, remote, [remote] {
-                remote->recheckMapping();
-            });
-            QObject::connect(parentSurface, &WSurface::mappedChanged, remote, [remote] {
-                remote->recheckMapping();
-            });
-        }
     }
 
 protected:
@@ -488,17 +504,6 @@ protected:
 
         registerExported(context);
         context->send_surface_token(token);
-
-        auto *ws = WSurface::fromHandle(wlrSurface);
-        if (ws) {
-            QObject::connect(ws,
-                             &WSurface::beforeDestroy,
-                             context,
-                             [this, context]() {
-                                 if (m_tokens.contains(context->token()))
-                                     safeDestroyExported(context);
-                             });
-        }
     }
 
 private:
@@ -508,6 +513,22 @@ private:
 // ---------------------------------------------------------------------------
 // ExportedSurfaceContext implementation
 // ---------------------------------------------------------------------------
+
+void ExportedSurfaceContext::handleSurfaceDestroy()
+{
+    if (!m_manager || m_manager->findExportedByToken(m_token) != this)
+        return;
+
+    if (auto *res = resource()) {
+        if (res->handle) {
+            wl_resource_destroy(res->handle);
+            return;
+        }
+    }
+    if (m_manager)
+        m_manager->cleanupExportedContext(this);
+    delete this;
+}
 
 void ExportedSurfaceContext::destroy_resource(Resource *)
 {
@@ -572,9 +593,7 @@ void ExportedSurfaceContext::create_remote_subsurface(Resource *resource,
                                                id);
 
     wlr_surface_set_role_object(childWlrSurface, remote->resource()->handle);
-
     m_manager->addChildToParent(remote);
-    m_manager->trackCommits(remote);
     qCDebug(lcWlRemoteSubsurface) << "Remote subsurface created: child" << shortToken(m_token)
                                   << "→ parent" << shortToken(parent_token);
     remote->recheckMapping();
@@ -608,6 +627,21 @@ static void remote_subsurface_role_destroy(struct wlr_surface *surface)
     Q_UNUSED(surface);
 }
 
+void RemoteSubsurfaceContext::ensureSubsurface()
+{
+    if (m_subsurface)
+        return;
+
+    auto *parentSurface = wsurfaceFrom(m_parent);
+    auto *childWlr = m_child ? m_child->surface() : nullptr;
+    if (!parentSurface || !childWlr)
+        return;
+
+    m_subsurface = WRemoteSubsurfaceManagerV1Private::createRemoteSubsurface(parentSurface, childWlr);
+    m_subsurface->setPosition(m_position);
+    m_manager->syncRemoteSubsurfaceOrder(m_parent);
+}
+
 void RemoteSubsurfaceContext::recheckMapping()
 {
     if (!m_manager)
@@ -618,6 +652,10 @@ void RemoteSubsurfaceContext::recheckMapping()
     bool parentMapped = false;
     auto *parentWs = wsurfaceFrom(m_parent);
     parentMapped = parentWs  && parentWs->mapped();
+
+    // ensureSubsurface re-creates this subsurface when the parent WSurface
+    // wrapper was destroyed and recreated.  Fast no-op when it still exists.
+    ensureSubsurface();
 
     bool childHasBuffer = childQw && wlr_surface_has_buffer(childQw);
     bool shouldBeMapped = parentMapped && childHasBuffer;
@@ -659,9 +697,9 @@ void RemoteSubsurfaceContext::cascadeUnmap()
 void RemoteSubsurfaceContext::set_position(Resource *resource, int32_t x, int32_t y)
 {
     Q_UNUSED(resource);
-    QPointF pos(x, y);
+    m_position = QPointF(x, y);
     if (m_subsurface)
-        m_subsurface->setPosition(pos);
+        m_subsurface->setPosition(m_position);
 }
 
 void RemoteSubsurfaceContext::place_above([[maybe_unused]] Resource *resource,
@@ -696,7 +734,7 @@ void RemoteSubsurfaceContext::place_below([[maybe_unused]] Resource *resource,
                                           const QString &sibling_token)
 {
     if (sibling_token.isEmpty()) {
-        send_invalid_sibling(sibling_token);
+        m_manager->placeChildBelowParentBottom(this);
         return;
     }
 
@@ -763,7 +801,7 @@ wl_global *WRemoteSubsurfaceManagerV1::global() const
 
 QByteArrayView WRemoteSubsurfaceManagerV1::interfaceName() const
 {
-    return QtWaylandServer::treeland_subsurface_manager_v1::interfaceName();
+    return QtWaylandServer::treeland_remote_subsurface_manager_v1::interfaceName();
 }
 
 WAYLIB_SERVER_END_NAMESPACE

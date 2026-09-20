@@ -24,9 +24,7 @@ Item {
     property int animationDuration: duration
     readonly property real minimizedRotation: -30
     readonly property bool showShadow: !target.noDecoration
-            && (direction === MinimizeAnimation.Direction.Hide
-                ? target.previousSurfaceState === SurfaceWrapper.State.Normal
-                : target.surfaceState === SurfaceWrapper.State.Normal)
+            && target.surfaceState === SurfaceWrapper.State.Normal
 
     function start() {
         configureAnimation(direction === MinimizeAnimation.Direction.Hide
@@ -108,6 +106,10 @@ Item {
             anchors.fill: parent
             visible: root.showShadow
             cornerRadius: root.target.radius
+            shadowBlur: root.target.shadowBlurRadius
+            shadowOffsetX: root.target.shadowOffsetX
+            shadowOffsetY: root.target.shadowOffsetY
+            shadowColor: root.target.shadowColor
         }
 
         ShaderEffectSource {

@@ -102,36 +102,11 @@ ws_generate(
     security-context-v1-protocol
 )
 
-#TODO: Remove after wlroots 0.20
-ws_generate(
-    server
-    wayland-protocols
-    staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml
-    xdg-toplevel-tag-v1-protocol
-)
-
-#TODO: Remove after wlroots 0.20
 ws_generate(
     server
     wayland-protocols
     stable/xdg-shell/xdg-shell.xml
     xdg-shell-protocol
-)
-
-#TODO: Remove after wlroots 0.20
-ws_generate(
-    server
-    wayland-protocols
-    staging/ext-image-capture-source/ext-image-capture-source-v1.xml
-    ext-image-capture-source-v1-protocol
-)
-
-#TODO: Remove after wlroots 0.20
-ws_generate(
-    server
-    wayland-protocols
-    staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml
-    ext-foreign-toplevel-list-v1-protocol
 )
 
 set(SOURCES
@@ -192,10 +167,7 @@ set(SOURCES
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/text-input-unstable-v2-protocol.c
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-output-unstable-v1-protocol.c
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/security-context-v1-protocol.c
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-toplevel-tag-v1-protocol.c #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-shell-protocol.c #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/ext-image-capture-source-v1-protocol.c #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/ext-foreign-toplevel-list-v1-protocol.c #TODO Remove after wlroots 0.20
+    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-shell-protocol.c
 
     utils/wtools.cpp
     utils/wthreadutils.cpp
@@ -213,7 +185,7 @@ set(SOURCES
     protocols/wxdgshell.cpp
     protocols/wxdgsurface.cpp
     protocols/wxdgtoplevelsurface.cpp
-    protocols/wxdgtopleveltagmanager.cpp #TODO: Remove after wlroots 0.20
+    protocols/wxdgtopleveltagmanager.cpp
     protocols/wxdgpopupsurface.cpp
 
     protocols/wxwayland.cpp
@@ -230,8 +202,9 @@ set(SOURCES
     protocols/private/wtextinputv2.cpp
     protocols/private/wtextinputv3.cpp
     protocols/private/wvirtualkeyboardv1.cpp
-    protocols/ext_foreign_toplevel_image_capture_source.c #TODO: Remove after wlroots 0.20
     protocols/wcursorshapemanagerv1.cpp
+    protocols/wpointerconstraintsv1.cpp
+    protocols/wrelativepointermanagerv1.cpp
     protocols/woutputmanagerv1.cpp
     protocols/wextforeigntoplevellistv1.cpp
     protocols/wxdgdialogmanagerv1.cpp
@@ -338,7 +311,11 @@ set(HEADERS
     protocols/WInputPopupSurface
     protocols/wcursorshapemanagerv1.h
     protocols/WCursorShapeManagerV1
+    protocols/wpointerconstraintsv1.h
+    protocols/WPointerConstraintsV1
     protocols/wremotesubsurfacemanagerv1.h
+    protocols/wrelativepointermanagerv1.h
+    protocols/WRelativePointerManagerV1
     protocols/woutputmanagerv1.h
     protocols/WOutputManagerV1
     protocols/wlayershell.h
@@ -349,7 +326,6 @@ set(HEADERS
     protocols/WXWaylandSurface
     protocols/wextforeigntoplevellistv1.h
     protocols/wxdgdialogmanagerv1.h
-    protocols/ext_foreign_toplevel_image_capture_source_manager_v1.h #TODO: Remove after wlroots 0.20
     protocols/wsecuritycontextmanager.h
     protocols/wsessionlockmanager.h
     protocols/WSessionLockManager
@@ -384,10 +360,7 @@ set(PRIVATE_HEADERS
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/text-input-unstable-v1-protocol.h
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/text-input-unstable-v2-protocol.h
     ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-output-unstable-v1-protocol.h
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-toplevel-tag-v1-protocol.h #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-shell-protocol.h #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/ext-image-capture-source-v1-protocol.h #TODO: Remove after wlroots 0.20
-    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/ext-foreign-toplevel-list-v1-protocol.h #TODO: Remove after wlroots 0.20
+    ${WAYLAND_PROTOCOLS_OUTPUTDIR}/xdg-shell-protocol.h
 
     protocols/private/winputmethodv2_p.h
     protocols/private/wtextinput_p.h
@@ -505,69 +478,81 @@ target_link_directories(${TARGET}
 )
 
 
+# Install the runtime library (versioned .so.*) only; the .so dev
+# symlink, exported targets, headers and pkg-config file are installed
+# separately when TREELAND_INSTALL_DEV is ON.
 install(TARGETS ${TARGET}
-    EXPORT
-        WaylibServerTargets
     LIBRARY
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER
-        COMPONENT Development
-        DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
+        NAMELINK_SKIP
 )
 
-# Generated config header (wconfig.h) is part of the public API surface
-# (included by wglobal.h) and must ship with the installed headers.
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/wconfig.h
-        DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
-)
+if(TREELAND_INSTALL_DEV)
+    install(TARGETS ${TARGET}
+        EXPORT
+            WaylibServerTargets
+        LIBRARY
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            NAMELINK_ONLY
+        PUBLIC_HEADER
+            COMPONENT Development
+            DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
+    )
 
-# Public headers use Q_MOC_INCLUDE/Q_PRIVATE_SLOT referencing kernel
-# private headers (e.g. wserver.h -> private/wserver_p.h), and Treeland
-# consumes kernel private API (e.g. WToplevelSurfacePrivate); install the
-# whole private directory so installed consumers can compile and moc.
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/kernel/private
-        DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
-        FILES_MATCHING PATTERN "*.h")
+    # Generated config header (wconfig.h) is part of the public API surface
+    # (included by wglobal.h) and must ship with the installed headers.
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/wconfig.h
+            DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
+    )
 
-# Install QML module generated targets separately to avoid dependency issues
-# This works around the Qt CMake QML module export issue
-get_directory_property(all_targets BUILDSYSTEM_TARGETS)
-foreach(target_name ${all_targets})
-    if(target_name MATCHES "^${TARGET}_resources_")
-        install(TARGETS ${target_name}
-            EXPORT WaylibServerTargets
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        )
-    endif()
-endforeach()
+    # Public headers use Q_MOC_INCLUDE/Q_PRIVATE_SLOT referencing kernel
+    # private headers (e.g. wserver.h -> private/wserver_p.h), and Treeland
+    # consumes kernel private API (e.g. WToplevelSurfacePrivate); install the
+    # whole private directory so installed consumers can compile and moc.
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/kernel/private
+            DESTINATION ${WAYLIB_INCLUDE_INSTALL_DIR}
+            FILES_MATCHING PATTERN "*.h")
 
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WaylibServerConfig.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfig.cmake"
-    INSTALL_DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
-)
+    # Install QML module generated targets separately to avoid dependency issues
+    # This works around the Qt CMake QML module export issue
+    get_directory_property(all_targets BUILDSYSTEM_TARGETS)
+    foreach(target_name ${all_targets})
+        if(target_name MATCHES "^${TARGET}_resources_")
+            install(TARGETS ${target_name}
+                EXPORT WaylibServerTargets
+                ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            )
+        endif()
+    endforeach()
 
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion
-)
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WaylibServerConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfig.cmake"
+        INSTALL_DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
+    )
 
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfigVersion.cmake
-    DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
-)
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion
+    )
 
-install(
-    EXPORT WaylibServerTargets
-    FILE WaylibServerTargets.cmake
-    DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
-    NAMESPACE Waylib::
-)
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/WaylibServerConfigVersion.cmake
+        DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
+    )
 
-include(${PROJECT_SOURCE_DIR}/cmake/Helpers.cmake)
-add_pkgconfig_module(${TARGET} ${TARGET} ${WAYLIB_INCLUDE_INSTALL_DIR}
-    "waylib-wlroots, Qt6Gui, Qt6Quick"
-)
+    install(
+        EXPORT WaylibServerTargets
+        FILE WaylibServerTargets.cmake
+        DESTINATION ${WAYLIB_CMAKE_INSTALL_DIR}
+        NAMESPACE Waylib::
+    )
+
+    include(${PROJECT_SOURCE_DIR}/cmake/Helpers.cmake)
+    add_pkgconfig_module(${TARGET} ${TARGET} ${WAYLIB_INCLUDE_INSTALL_DIR}
+        "waylib-wlroots, Qt6Gui, Qt6Quick"
+    )
+endif()

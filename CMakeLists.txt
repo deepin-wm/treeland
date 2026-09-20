@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25.0)
 
 project(Treeland
-    VERSION 0.8.18
+    VERSION 0.10.0
     LANGUAGES CXX C)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -25,6 +25,8 @@ add_feature_info(ASanSupport ADDRESS_SANITIZER "https://github.com/google/saniti
 
 option(BUILD_TREELAND_EXAMPLES "Build clients demo to test treeland" OFF)
 add_feature_info(DemoClents BUILD_TEST_CLIENTS "clients demo for testing")
+
+option(BUILD_TREELAND_PROTOCOL_TESTS "Build Treeland Wayland protocol tests" ON)
 
 option(USE_BUILD_TREE_WALLPAPER_FACTORY
        "Use the wallpaper factory executable from the build tree"
@@ -51,10 +53,40 @@ if (NOT EXT_SESSION_LOCK_V1 AND DISABLE_DDM)
     message(WARNING "no ext-session-lock support and no DDM, treeland will not have session locking ability.")
 endif()
 
+option(TREELAND_INSTALL_DEV "Install development files (headers, CMake config, pkg-config, .so symlinks)" OFF)
+add_feature_info(treeland_install_dev TREELAND_INSTALL_DEV "Install development files for external consumers")
+
 if (ADDRESS_SANITIZER)
     add_compile_options(-fsanitize=address -fno-optimize-sibling-calls -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
 endif()
+
+# Enable the treeland-debug remote source by default in Debug builds so the
+# adb-style debug tool works out of the box without toggling the DConfig key.
+# Release builds stay gated by the remoteDebug DConfig key (default false), so
+# the source is not created unless explicitly enabled. Pass
+# -DTREELAND_DEBUG_SOURCE=OFF to also keep it off in Debug builds.
+option(TREELAND_DEBUG_SOURCE "Enable treeland-debug remote source by default in Debug builds" ON)
+if (TREELAND_DEBUG_SOURCE)
+    add_compile_definitions($<$<CONFIG:Debug>:ALWAYS_ENABLE_TREELAND_DEBUG>)
+endif()
+
+# Socket base names for the treeland-debug remote-object channel.
+# Debug builds use a distinct name so a debug-compiled treeland can run
+# alongside a release one in the same runtime directory.  A debug-built
+# treeland-debug client prefers the debug instance and falls back to the
+# release instance when the debug one is unreachable.
+set(TREELAND_DEBUG_SOCKET_RELEASE "org.deepin.dde.treeland.debug")
+set(TREELAND_DEBUG_SOCKET_DEV "org.deepin.dde.treeland.debug-dev")
+# Use generator expressions so multi-config generators (Ninja Multi-Config,
+# Visual Studio) also select the debug socket for Debug configurations.
+add_compile_definitions(
+    "TREELAND_DEBUG_SOCKET_RELEASE=\"${TREELAND_DEBUG_SOCKET_RELEASE}\""
+    "$<$<CONFIG:Debug>:TREELAND_DEBUG_DEV_BUILD>"
+    "$<$<CONFIG:Debug>:TREELAND_DEBUG_SOCKET=\"${TREELAND_DEBUG_SOCKET_DEV}\">"
+    "$<$<NOT:$<CONFIG:Debug>>:TREELAND_DEBUG_SOCKET=\"${TREELAND_DEBUG_SOCKET_RELEASE}\">"
+)
+
 # NOTE: Qt keywords conflict with wlroots. but dtksystemsettings still uses it.
 # add_definitions("-DQT_NO_KEYWORDS")
 
@@ -119,6 +151,8 @@ GNUInstallDirs_get_absolute_install_dir(
     TREELAND_COMPONENTS_TRANSLATION_DIR
     DATADIR
 )
+
+set(TREELAND_SYSCONFDIR "${CMAKE_INSTALL_FULL_SYSCONFDIR}/treeland" CACHE PATH "treeland system config directory")
 
 add_compile_definitions("TREELAND_DATA_DIR=\"${TREELAND_FULL_DATA_DIR}\"")
 # NOTE:: remove force assert before stable version

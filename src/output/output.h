@@ -46,8 +46,8 @@ class Output : public SurfaceListModel
 public:
     enum class Type
     {
-        Primary,
-        Proxy
+        Source,
+        Mirror
     };
 
     enum class PlaceDirection
@@ -75,7 +75,7 @@ public:
     explicit Output(WOutputItem *output, QObject *parent = nullptr);
     ~Output() override;
 
-    bool isPrimary() const;
+    bool isSource() const;
 
     void addSurface(SurfaceWrapper *surface) override;
     void removeSurface(SurfaceWrapper *surface) override;
@@ -88,6 +88,7 @@ public:
     QRectF geometry() const;
     QRectF validRect() const;
     QRectF validGeometry() const;
+    QRectF tileGeometry(SurfaceWrapper::TileMode mode) const;
     WOutputViewport *screenViewport() const;
     void updatePositionFromLayout();
     void applyOutputColorConfig();
@@ -171,7 +172,7 @@ private:
     QList<std::pair<QObject *, int>> m_leftExclusiveZones;
     QList<std::pair<QObject *, int>> m_rightExclusiveZones;
 
-    QList<WOutputLayer *> m_hardwareLayersOfPrimaryOutput;
+    QList<WOutputLayer *> m_hardwareLayersOfSourceOutput;
     PlaceDirection m_nextPlaceDirection = PlaceDirection::BottomRight;
 
     QMap<SurfaceWrapper*, QPair<QPointF, QRectF>> m_positionCache;

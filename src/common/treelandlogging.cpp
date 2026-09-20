@@ -60,6 +60,7 @@ Q_LOGGING_CATEGORY(lcTlPropertyMonitor, "treeland.property.monitor")
 
 // Shortcut system
 Q_LOGGING_CATEGORY(lcTlShortcut, "treeland.shortcut")
+Q_LOGGING_CATEGORY(lcTlKeyboardShortcutsInhibit, "treeland.shortcut.inhibit")
 
 // Greeter module
 Q_LOGGING_CATEGORY(lcTlGreeter, "treeland.greeter")
@@ -79,6 +80,9 @@ Q_LOGGING_CATEGORY(lcTlAppIdResolver, "treeland.appid.resolver", QtInfoMsg)
 // Prelaunch splash
 Q_LOGGING_CATEGORY(lcTlPrelaunchSplash, "treeland.prelaunch.splash", QtInfoMsg)
 
+// Layer shell extension (compositor-driven layer surface resize)
+Q_LOGGING_CATEGORY(lcTlLayerShell, "treeland.shell.layer", QtInfoMsg)
+
 // XWayland
 Q_LOGGING_CATEGORY(lcTlXwayland, "treeland.xwayland")
 
@@ -89,3 +93,9 @@ Q_LOGGING_CATEGORY(lcTlDdm, "treeland.ddm")
 Q_LOGGING_CATEGORY(lcTlPopupFocus, "treeland.popup.focus")
 // XDG shell
 Q_LOGGING_CATEGORY(lcTlShellXdg, "treeland.shell.xdg", QtInfoMsg)
+// Hook scripts runner
+Q_LOGGING_CATEGORY(lcTlHooks, "treeland.hooks")
+
+// Debug remote source
+Q_LOGGING_CATEGORY(lcTlDebug, "treeland.debug")
+

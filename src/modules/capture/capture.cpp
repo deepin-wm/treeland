@@ -821,6 +821,19 @@ CaptureSource *CaptureSourceSelector::selectedSource() const
     return m_selectedSource;
 }
 
+void CaptureSourceSelector::selectSurface(WSurfaceItemContent *surfaceItemContent)
+{
+    if (!surfaceItemContent)
+        return;
+
+    const QRect region = surfaceItemContent
+        ->mapRectToItem(this, surfaceItemContent->boundingRect())
+        .toRect();
+    setSelectedSource(new CaptureSourceSurface(surfaceItemContent,
+                                                surfaceItemContent->devicePixelRatio()),
+                      region);
+}
+
 void CaptureSourceSelector::setSelectedSource(CaptureSource *newSelectedSource, const QRect &region)
 {
     if (m_selectedSource == newSelectedSource)
@@ -890,10 +903,7 @@ void CaptureSourceSelector::mouseReleaseEvent([[maybe_unused]] QMouseEvent *even
     }
     case SelectionMode::SelectWindow: {
         if (auto surfaceItemContent = qobject_cast<WSurfaceItemContent *>(hoveredItem())) {
-            setSelectedSource(
-                new CaptureSourceSurface(surfaceItemContent,
-                                         m_itemSelector->outputItem()->devicePixelRatio()),
-                selectionRegion().toRect());
+            selectSurface(surfaceItemContent);
         }
         break;
     }
@@ -1004,7 +1014,7 @@ wlr_buffer *CaptureSourceOutput::internalBuffer()
 {
     Q_ASSERT(m_sourceList.size() == 1);
     if (m_sourceList.first().first && m_outputViewport->wTextureProvider())
-        return m_outputViewport->wTextureProvider()->qwBuffer();
+        return m_outputViewport->wTextureProvider()->wlrBuffer();
     else
         return nullptr;
 }
@@ -1037,7 +1047,7 @@ wlr_buffer *CaptureSourceRegion::internalBuffer()
 {
     if (m_sourceList.size() == 1 && m_sourceList.first().first
         && m_sourceList.first().second->wTextureProvider()) {
-        return m_sourceList.first().second->wTextureProvider()->qwBuffer();
+        return m_sourceList.first().second->wTextureProvider()->wlrBuffer();
     } else {
         return nullptr;
     }

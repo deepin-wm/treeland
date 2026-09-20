@@ -10,9 +10,10 @@
 #include "layersurfacecontainer.h"
 #include "modules/app-id-resolver/appidresolver.h"
 #include "modules/dde-shell/ddeshellmanagerinterfacev1.h"
-#include "modules/foreign-toplevel/foreigntoplevelmanagerv1.h"
+#include "modules/foreign-toplevel/foreigntoplevelmanagerv2.h"
+#include "modules/layer-shell-extension/layershellextensionmanagerinterfacev1.h"
 #include "modules/prelaunch-splash/prelaunchsplash.h"
-#include "modules/window-management/windowmanagementinterfacev1.h"
+#include "modules/show-desktop/showdesktopinterfacev1.h"
 #include "modules/wine-window-management/winewindowmanagement.h"
 #include "modules/wine-window-state/winewindowstate.h"
 #include "output/output.h"
@@ -71,15 +72,15 @@ ShellHandler::ShellHandler(RootSurfaceContainer *rootContainer, WServer *server)
     , m_privilegedOverlayContainer(new SurfaceContainer(rootContainer))
     , m_windowConfigStore(new WindowConfigStore(this))
 {
-    m_treelandForeignToplevel = server->attach<ForeignToplevelManagerInterfaceV1>();
+    m_treelandForeignToplevel = server->attach<ForeignToplevelManagerInterfaceV2>();
     Q_ASSERT(m_treelandForeignToplevel);
-    qmlRegisterSingletonInstance<ForeignToplevelManagerInterfaceV1>(
+    qmlRegisterSingletonInstance<ForeignToplevelManagerInterfaceV2>(
         "Treeland.Protocols",
         1,
         0,
-        "ForeignToplevelManagerInterfaceV1",
+        "ForeignToplevelManagerInterfaceV2",
         m_treelandForeignToplevel);
-    qRegisterMetaType<ForeignToplevelManagerInterfaceV1::PreviewDirection>();
+    qRegisterMetaType<ForeignToplevelManagerInterfaceV2::PreviewDirection>();
 
     m_backgroundContainer->setZ(RootSurfaceContainer::BackgroundZOrder);
     m_backgroundContainer->setObjectName(QStringLiteral("BackgroundContainer"));
@@ -208,7 +209,7 @@ void ShellHandler::updateXWaylandDesktopProperties()
                                        viewports,
                                        workareas,
                                        Helper::instance()->showDesktopState()
-                                           == WindowManagementInterfaceV1::DesktopState::Show);
+                                           == ShowDesktopInterfaceV1::State::Show);
     }
 }
 
@@ -220,6 +221,9 @@ void ShellHandler::updateWrapperContainer(SurfaceWrapper *wrapper, WSurface *par
     auto oldContainer = wrapper->container();
     if (parentSurface) {
         auto parentWrapper = m_rootSurfaceContainer->getSurface(parentSurface);
+        if (!parentWrapper)
+            return;
+
         auto parentContainer = qobject_cast<SurfaceContainer *>(parentWrapper->container());
         parentWrapper->addSubSurface(wrapper);
         if (oldContainer != parentContainer) {
@@ -306,9 +310,12 @@ void ShellHandler::createPrelaunchSplash(const QString &appId,
     }
     m_pendingPrelaunchAppIds.remove(appId);
 
-    const qlonglong effectiveType =
-        splashThemeType == 0 ? Helper::instance()->config()->windowThemeType() : splashThemeType;
-    const QColor splashColor = effectiveType == 1 ? QColor(lightPalette) : QColor(darkPalette);
+    // splashThemeType: 0 = follow system, 1 = light, 2 = dark
+    // windowColorScheme: 0 = light, 1 = dark
+    const bool dark = splashThemeType == 0
+                          ? Helper::instance()->config()->windowColorScheme() == 1
+                          : splashThemeType == 2;
+    const QColor splashColor = dark ? QColor(darkPalette) : QColor(lightPalette);
 
     auto *wrapper = new SurfaceWrapper(Helper::instance()->qmlEngine(),
                                        nullptr,
@@ -406,7 +413,7 @@ RootSurfaceContainer *ShellHandler::rootSurfaceContainer() const
     return m_rootSurfaceContainer;
 }
 
-ForeignToplevelManagerInterfaceV1 *ShellHandler::foreignToplevel() const
+ForeignToplevelManagerInterfaceV2 *ShellHandler::foreignToplevel() const
 {
     return m_treelandForeignToplevel;
 }
@@ -436,6 +443,7 @@ void ShellHandler::init(WServer *server, WSeat *seat)
     Q_ASSERT_X(!m_layerShell, Q_FUNC_INFO, "Only init once!");
     Q_ASSERT_X(!m_wallpaperShell, Q_FUNC_INFO, "Only init once!");
     Q_ASSERT_X(!m_inputMethodHelper, Q_FUNC_INFO, "Only init once!");
+    Q_ASSERT_X(!m_layerShellExtensionManagerInterfaceV1, Q_FUNC_INFO, "Only init once!");
 
     m_prelaunchSplash = server->attach<PrelaunchSplash>();
     connect(m_prelaunchSplash,
@@ -448,6 +456,8 @@ void ShellHandler::init(WServer *server, WSeat *seat)
             &ShellHandler::handlePrelaunchSplashClosed);
 
     m_appIdResolverManager = server->attach<AppIdResolverManager>();
+    m_layerShellExtensionManagerInterfaceV1 =
+        server->attach<LayerShellExtensionManagerInterfaceV1>();
     m_wineWindowStateManager = server->attach<WineWindowStateManager>();
     m_wineWindowManager = server->attach<WineWindowManager>();
 
@@ -505,6 +515,8 @@ WXWayland *ShellHandler::createXWayland(WServer *server,
     m_xwaylands.append(xwayland);
     xwayland->setSeat(seat);
     connect(xwayland, &WXWayland::surfaceAdded, this, &ShellHandler::onXWaylandSurfaceAdded);
+    // aboutToDissociate never fires when the XWayland instance is torn down.
+    connect(xwayland, &WXWayland::surfaceRemoved, this, &ShellHandler::onXWaylandSurfaceRemoved);
     connect(xwayland, &WXWayland::ready, xwayland, [this, xwayland] {
         auto atomPid = xwayland->atom("_NET_WM_PID");
         xwayland->setAtomSupported(atomPid, true);
@@ -570,6 +582,17 @@ void ShellHandler::onXdgToplevelSurfaceAdded(WXdgToplevelSurface *surface)
     ensureXdgWrapper(surface, QString());
 }
 
+void ShellHandler::onXWaylandSurfaceRemoved(WXWaylandSurface *surface)
+{
+    auto *wrapper = m_rootSurfaceContainer->getSurface(surface);
+    if (!wrapper || wrapper->isAboutToRemove())
+        return;
+    if (auto *xwayland = surface->xwayland())
+        xwayland->cancelAsyncProperties(surface->handle()->window_id);
+    Q_EMIT surfaceWrapperAboutToRemove(wrapper);
+    m_rootSurfaceContainer->destroyForSurface(wrapper);
+}
+
 void ShellHandler::ensureXdgWrapper(WXdgToplevelSurface *surface, const QString &targetAppId)
 {
     // Check if this matches a closed splash screen
@@ -623,6 +646,14 @@ void ShellHandler::ensureXdgWrapper(WXdgToplevelSurface *surface, const QString 
                          updateSurfaceWithParentContainer);
     updateSurfaceWithParentContainer();
     Q_ASSERT(wrapper->parentItem());
+    if (surface->isInitialized()) {
+        const auto initialState = surface->handle()->requested.fullscreen
+            ? SurfaceWrapper::State::Fullscreen
+            : surface->handle()->requested.maximized ? SurfaceWrapper::State::Maximized
+                                                     : SurfaceWrapper::State::Normal;
+        if (initialState != SurfaceWrapper::State::Normal)
+            wrapper->setSurfaceStateDirectly(initialState);
+    }
     setupSurfaceWindowMenu(wrapper);
     // Only setup active watcher for newly created wrappers;
     // prelaunch splash wrappers already have it set up in createPrelaunchSplash
@@ -706,7 +737,7 @@ void ShellHandler::onXdgToplevelSurfaceRemoved(WXdgToplevelSurface *surface)
     // Persist the last size of a normal window (prefer normalGeometry) when an appId is present
     if (m_windowConfigStore && !wrapper->appId().isEmpty()) {
         QSizeF sz = wrapper->normalGeometry().size();
-        if (!sz.isValid() || sz.isEmpty()) {
+        if ((!sz.isValid() || sz.isEmpty()) && wrapper->isNormal()) {
             sz = wrapper->geometry().size();
         }
         const QSize s = sz.toSize();
@@ -934,12 +965,24 @@ void ShellHandler::ensureXwaylandWrapper(WXWaylandSurface *surface, const QStrin
     }
 
     // Initialize wrapper
-    auto updateSurfaceWithParentContainer = [this, wrapper, surface] {
-        updateWrapperContainer(wrapper, surface->parentSurface());
+    wrapper->setModal(surface->isModal());
+    auto surfaceGuard = QPointer<WXWaylandSurface>(surface);
+    auto wrapperGuard = QPointer<SurfaceWrapper>(wrapper);
+    auto updateSurfaceWithParentContainer = [this, surfaceGuard, wrapperGuard] {
+        if (!surfaceGuard || !wrapperGuard || wrapperGuard->shellSurface() != surfaceGuard)
+            return;
+
+        updateWrapperContainer(wrapperGuard, surfaceGuard->parentSurface());
+
+        if (!surfaceGuard->isBypassManager()) {
+            if (auto *parent = surfaceGuard->parentXWaylandSurface())
+                surfaceGuard->restack(parent, WXWaylandSurface::XCB_STACK_MODE_ABOVE);
+        }
     };
-    QObject::connect(surface, &WXWaylandSurface::parentSurfaceChanged,
-                         this,
-                         updateSurfaceWithParentContainer);
+    QObject::connect(surface,
+                     &WXWaylandSurface::parentSurfaceChanged,
+                     wrapper,
+                     updateSurfaceWithParentContainer);
     updateSurfaceWithParentContainer();
     Q_ASSERT(wrapper->parentItem());
     const auto initialState = surface->handle()->fullscreen
@@ -981,15 +1024,15 @@ void ShellHandler::setupDockPreview()
     Q_ASSERT(m_dockPreview);
 
     connect(m_treelandForeignToplevel,
-            &ForeignToplevelManagerInterfaceV1::requestDockPreview,
+            &ForeignToplevelManagerInterfaceV2::requestDockPreview,
             this,
             &ShellHandler::onDockPreview);
     connect(m_treelandForeignToplevel,
-            &ForeignToplevelManagerInterfaceV1::requestDockPreviewTooltip,
+            &ForeignToplevelManagerInterfaceV2::requestDockPreviewTooltip,
             this,
             &ShellHandler::onDockPreviewTooltip);
     connect(m_treelandForeignToplevel,
-            &ForeignToplevelManagerInterfaceV1::requestDockClose,
+            &ForeignToplevelManagerInterfaceV2::requestDockClose,
             m_dockPreview,
             [this]() {
                 QMetaObject::invokeMethod(m_dockPreview, "close");
@@ -999,7 +1042,7 @@ void ShellHandler::setupDockPreview()
 void ShellHandler::onDockPreview(std::vector<SurfaceWrapper *> surfaces,
                                  WSurface *target,
                                  QPoint pos,
-                                 ForeignToplevelManagerInterfaceV1::PreviewDirection direction)
+                                 ForeignToplevelManagerInterfaceV2::PreviewDirection direction)
 {
     if (!m_dockPreview)
         return;
@@ -1019,7 +1062,7 @@ void ShellHandler::onDockPreviewTooltip(
     QString tooltip,
     WSurface *target,
     QPoint pos,
-    ForeignToplevelManagerInterfaceV1::PreviewDirection direction)
+    ForeignToplevelManagerInterfaceV2::PreviewDirection direction)
 {
     if (!m_dockPreview)
         return;
@@ -1058,7 +1101,8 @@ void ShellHandler::onSurfaceInactivationRequested(SurfaceWrapper *wrapper)
             if (seat == primarySeat) {
                 helper->activateSurface(m_workspace->current()->latestActiveSurface(),
                                         Qt::OtherFocusReason,
-                                        seat);
+                                        seat,
+                                        false);
             } else {
                 helper->requestKeyboardFocus(nullptr, Qt::OtherFocusReason, seat);
             }
@@ -1099,8 +1143,10 @@ void ShellHandler::setupSurfaceActiveWatcher(SurfaceWrapper *wrapper)
                  */
                 if (layerSurface->layer() >= WLayerSurface::LayerType::Top
                     || layerSurface->keyboardInteractivity()
-                        == WLayerSurface::KeyboardInteractivity::Exclusive)
+                        == WLayerSurface::KeyboardInteractivity::Exclusive) {
+                    Helper::instance()->cancelShowDesktop();
                     Helper::instance()->requestKeyboardFocus(wrapper);
+                }
             } else {
                 onSurfaceInactivationRequested(wrapper);
             }
@@ -1177,6 +1223,8 @@ void ShellHandler::updateLayerSurfaceContainer(SurfaceWrapper *surface)
         break;
     case WLayerSurface::LayerType::Top:
         m_topContainer->addSurface(surface);
+        if (surface->isLaunchpad() || surface->isQuickLaunchpad())
+            surface->setZ(-1);
         break;
     case WLayerSurface::LayerType::Overlay:
         m_overlayContainer->addSurface(surface);
@@ -1303,20 +1351,4 @@ void ShellHandler::handleDdeShellSurfaceAdded(WSurface *surface, SurfaceWrapper 
             [wrapper](bool accept) {
                 wrapper->setAcceptKeyboardFocus(accept);
             });
-}
-
-void ShellHandler::setResourceManagerAtom(WAYLIB_SERVER_NAMESPACE::WXWayland *xwayland,
-                                          const QByteArray &value)
-{
-    auto xcb_conn = xwayland->xcbConnection();
-    auto root = xwayland->xcbScreen()->root;
-    xcb_change_property(xcb_conn,
-                        XCB_PROP_MODE_REPLACE,
-                        root,
-                        xwayland->atom("RESOURCE_MANAGER"),
-                        XCB_ATOM_STRING,
-                        8,
-                        value.size(),
-                        value.constData());
-    xcb_flush(xcb_conn);
 }

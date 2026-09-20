@@ -10,13 +10,15 @@
 #include "common/treelandlogging.h"
 #include "greeter/greeterproxy.h"
 
-#ifdef EXT_SESSION_LOCK_V1
-#include <wsessionlock.h>
-#include <wsessionlocksurface.h>
+#include <woutputitem.h>
 
+#ifdef EXT_SESSION_LOCK_V1
 #include "rootsurfacecontainer.h"
 #include "surfacewrapper.h"
-#include "woutputitem.h"
+
+#include <wcursor.h>
+#include <wsessionlock.h>
+#include <wsessionlocksurface.h>
 #endif
 
 WAYLIB_SERVER_USE_NAMESPACE
@@ -32,14 +34,22 @@ LockScreen::LockScreen(ILockScreen *impl, SurfaceContainer *parent, GreeterProxy
     m_delayTimer->setSingleShot(true);
     // Display desktop animation after lock screen animation with a delay of 300ms
     m_delayTimer->setInterval(300);
+
+    // The global login view is lazily created when this container becomes
+    // visible (locked) and destroyed when it hides (unlocked). Track the
+    // cursor so the login UI follows the output the mouse is on.
+    connect(this, &QQuickItem::visibleChanged, this, &LockScreen::onLoginViewVisibleChanged);
+    connect(rootContainer()->cursor(),
+            &WCursor::positionChanged,
+            this,
+            &LockScreen::onCursorPositionChanged);
 }
 
 void LockScreen::lock()
 {
-    if (isVisible()) {
-        return;
-    }
-
+    // Do not early-return on isVisible(): the greeter may start in the
+    // undecided state (surface visible, not yet locked), so lock() must
+    // still flip the lock state afterwards.
     setVisible(true);
 
     if (!m_greeterProxy->isLocked())
@@ -88,10 +98,11 @@ void LockScreen::addOutput(Output *output)
     qCDebug(lcTlShell) << "Adding output to lock screen:" << output;
 
     SurfaceContainer::addOutput(output);
-#if EXT_SESSION_LOCK_V1
     auto outputItem = output->outputItem();
-    connect(outputItem, &WOutputItem::geometryChanged, this, &LockScreen::onOutputGeometryChanged);
+    connect(outputItem, &WOutputItem::geometryChanged, this, &LockScreen::repositionLoginView);
 
+#if EXT_SESSION_LOCK_V1
+    connect(outputItem, &WOutputItem::geometryChanged, this, &LockScreen::onOutputGeometryChanged);
     const auto &[_, ok] = m_lockSurfaces.emplace(outputItem, nullptr);
     Q_ASSERT(ok);
 #endif
@@ -101,15 +112,13 @@ void LockScreen::addOutput(Output *output)
     }
 
     auto *item = m_impl->createLockScreen(output, this);
-    item->setProperty("primaryOutputName", m_primaryOutputName);
-
-    connect(item, SIGNAL(animationPlayed()), this, SLOT(onAnimationPlayed()));
-    connect(item, SIGNAL(animationPlayFinished()), this, SLOT(onAnimationPlayFinished()));
 
     m_components.insert(
         { output, std::unique_ptr<QQuickItem, void (*)(QQuickItem *)>(item, [](QQuickItem *item) {
               item->deleteLater();
           }) });
+
+    repositionLoginView();
 }
 
 bool LockScreen::isLocked() const
@@ -122,8 +131,10 @@ void LockScreen::removeOutput(Output *output)
     qCDebug(lcTlShell) << "Removing output from lock screen:" << output;
 
     SurfaceContainer::removeOutput(output);
-#if EXT_SESSION_LOCK_V1
     auto outputItem = output->outputItem();
+    disconnect(outputItem, &WOutputItem::geometryChanged, this, &LockScreen::repositionLoginView);
+
+#if EXT_SESSION_LOCK_V1
     disconnect(outputItem,
                &WOutputItem::geometryChanged,
                this,
@@ -136,6 +147,7 @@ void LockScreen::removeOutput(Output *output)
     }
 #endif
     m_components.erase(output);
+    repositionLoginView();
 }
 
 void LockScreen::onAnimationPlayed()
@@ -158,16 +170,81 @@ bool LockScreen::available() const
     return m_impl != nullptr;
 }
 
-void LockScreen::setPrimaryOutputName(const QString &primaryOutputName)
+void LockScreen::onLoginViewVisibleChanged()
 {
-    qCDebug(lcTlShell) << "Setting primary output name for lock screen:" << primaryOutputName;
-
-    m_primaryOutputName = primaryOutputName;
-    for (const auto &[k, v] : std::as_const(m_components)) {
-        v->setProperty("primaryOutputName", primaryOutputName);
+    if (isVisible()) {
+        createLoginView();
+    } else {
+        destroyLoginView();
     }
 }
 
+void LockScreen::createLoginView()
+{
+    if (!m_impl || m_loginView) {
+        return;
+    }
+
+    qCDebug(lcTlShell) << "Creating global login view for lock screen";
+    auto *item = m_impl->createLockView(this);
+    if (!item) {
+        qCWarning(lcTlShell) << "Failed to create global login view";
+        return;
+    }
+
+    connect(item, SIGNAL(animationPlayed()), this, SLOT(onAnimationPlayed()));
+    connect(item, SIGNAL(animationPlayFinished()), this, SLOT(onAnimationPlayFinished()));
+
+    m_loginView = item;
+    m_loginView->setZ(1);
+    repositionLoginView();
+}
+
+void LockScreen::destroyLoginView()
+{
+    if (!m_loginView) {
+        return;
+    }
+    qCDebug(lcTlShell) << "Destroying global login view for lock screen";
+    m_loginView->deleteLater();
+    m_loginView = nullptr;
+}
+
+Output *LockScreen::followerOutput() const
+{
+    auto *root = rootContainer();
+    if (auto *out = root->cursorOutput()) {
+        return out;
+    }
+    return root->primaryOutput();
+}
+
+void LockScreen::repositionLoginView()
+{
+    if (!m_loginView) {
+        return;
+    }
+
+    auto *out = followerOutput();
+    if (!out) {
+        return;
+    }
+
+    const auto pos = out->outputItem()->position();
+    const auto size = out->outputItem()->size();
+
+    m_loginView->setX(pos.x());
+    m_loginView->setY(pos.y());
+    m_loginView->setWidth(size.width());
+    m_loginView->setHeight(size.height());
+}
+
+void LockScreen::onCursorPositionChanged()
+{
+    if (m_loginView) {
+        repositionLoginView();
+    }
+}
 #if EXT_SESSION_LOCK_V1
 // ext_session_lock_v1 capabilities
 

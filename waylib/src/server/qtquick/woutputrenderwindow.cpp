@@ -1369,10 +1369,8 @@ bool WOutputRenderWindowPrivate::initRCWithRhi()
         auto dev = wlr_vk_renderer_get_device(m_renderer);
         auto queue_family = wlr_vk_renderer_get_queue_family(m_renderer);
 
-#if QT_VERSION > QT_VERSION_CHECK(6, 6, 0)
         auto instance = wlr_vk_renderer_get_instance(m_renderer);
         vkInstance->setVkInstance(instance);
-#endif
         //        vkInstance->setExtensions(fromCStyleList(vkRendererAttribs.extension_count, vkRendererAttribs.extensions));
         //        vkInstance->setLayers(fromCStyleList(vkRendererAttribs.layer_count, vkRendererAttribs.layers));
         vkInstance->setApiVersion({1, 1, 0});
@@ -1512,7 +1510,10 @@ WOutputRenderWindowPrivate::doRenderOutputs(wlr_output *needsFrameOutput, const 
     needsCommit.reserve(renderResults.size());
     for (auto helper : std::as_const(renderResults)) {
         auto bufferRenderer = helper->afterRender();
-        if (bufferRenderer)
+        // A forced render may not acquire a new buffer, while an external
+        // output state transaction is still pending. WOutputHelper::commit()
+        // handles a null renderer by committing that state-only update.
+        if (bufferRenderer || helper->extraState())
             needsCommit.append({helper, bufferRenderer});
     }
 
@@ -1583,10 +1584,16 @@ void WOutputRenderWindowPrivate::doRender(wlr_output *needsFrameOutput,
     if (doCommit) {
         committedOutputs.reserve(needsCommit.size());
         for (auto i : std::as_const(needsCommit)) {
-            if (Q_UNLIKELY(!i.first->framePending())) {
+            // Explicit render(viewport, true) is used for state-only output
+            // transactions. It must not be suppressed merely because the
+            // transaction itself scheduled the next frame.
+            if (forceRender || Q_UNLIKELY(!i.first->framePending())) {
+                auto output = i.first->outputViewport()->output();
+                // Let consumers sample wp_presentation_time feedback (and other
+                // last-minute per-output work) before the output state is committed.
+                Q_EMIT q->outputAboutToCommit(output);
                 if (Q_LIKELY(i.first->commit(i.second))) {
                     // Make sure the output is still valid after commit
-                    auto output = i.first->outputViewport()->output();
                     if (Q_LIKELY(needsFrameOutput)) {
                         Q_ASSERT(output->handle() == needsFrameOutput);
                         if (committedOutputs.isEmpty())
@@ -1687,10 +1694,11 @@ void WOutputRenderWindow::attach(WOutputViewport *output)
         // On hot-unplug WBackend deletes WOutput from the native destroy
         // callback; ~WOutput::teardown() drops this owner group before
         // wlr_output_finish asserts empty frame/needs_frame lists.
-        // Equivalent to the old qw_output::notify_frame -> render() slot:
-        // render() calls doRender(nullptr, ...) and scans all outputs.
-        woutput->listeners(owner)->add(&wlrOut->events.frame, this,
-                                       qOverload<>(&WOutputRenderWindow::render));
+        // Only render the output whose frame event fired. Explicit render()
+        // calls still scan all outputs.
+        woutput->listeners(owner)->add(&wlrOut->events.frame, this, [d, wlrOut] {
+            d->doRender(wlrOut, d->outputs, false, true);
+        });
         woutput->listeners(owner)->add(&wlrOut->events.needs_frame, woutput,
                                        &WOutput::scheduleFrame);
     }

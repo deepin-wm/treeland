@@ -58,7 +58,7 @@ Output *Output::create(WOutput *output, QQmlEngine *engine, QObject *parent)
     auto isSoftwareCursor = [](WOutput *output) -> bool {
         return wlr_output_is_x11(output->handle()) || Helper::instance()->globalConfig()->forceSoftwareCursor();
     };
-    QQmlComponent delegate(engine, "Treeland", "PrimaryOutput");
+    QQmlComponent delegate(engine, "Treeland", "SourceOutput");
     QObject *obj = delegate.beginCreate(engine->rootContext());
     delegate.setInitialProperties(obj, { { "forceSoftwareCursor", isSoftwareCursor(output) } });
     delegate.completeCreate();
@@ -80,7 +80,7 @@ Output *Output::create(WOutput *output, QQmlEngine *engine, QObject *parent)
             });
 
     auto o = new Output(outputItem, parent);
-    o->m_type = Type::Primary;
+    o->m_type = Type::Source;
     obj->setParent(o);
 
     o->minimizedSurfaces->setFilter([](SurfaceWrapper *s) {
@@ -129,7 +129,7 @@ Output *Output::create(WOutput *output, QQmlEngine *engine, QObject *parent)
 
 Output *Output::createCopy(WOutput *output, Output *proxy, QQmlEngine *engine, QObject *parent)
 {
-    QQmlComponent delegate(engine, "Treeland", "CopyOutput");
+    QQmlComponent delegate(engine, "Treeland", "MirrorOutput");
     QObject *obj = delegate.createWithInitialProperties(
         {
             { "targetOutputItem", QVariant::fromValue(proxy->outputItem()) },
@@ -144,7 +144,7 @@ Output *Output::createCopy(WOutput *output, Output *proxy, QQmlEngine *engine, Q
     outputItem->setOutput(output);
 
     auto o = new Output(outputItem, parent);
-    o->m_type = Type::Proxy;
+    o->m_type = Type::Mirror;
     o->m_proxy = proxy;
     obj->setParent(o);
 
@@ -173,14 +173,14 @@ Output::Output(WOutputItem *output, QObject *parent)
 
 Output::~Output()
 {
-    // Copy outputs reuse the primary output's hardware layers. Detach them
+    // Mirror outputs reuse the source output's hardware layers. Detach them
     // explicitly before destroying the viewport so that the output gets a new
     // frame and stale hardware-plane contents (notably the cursor) are cleared.
-    if (m_type == Type::Proxy && m_outputViewport) {
-        for (auto *layer : std::as_const(m_hardwareLayersOfPrimaryOutput)) {
+    if (m_type == Type::Mirror && m_outputViewport) {
+        for (auto *layer : std::as_const(m_hardwareLayersOfSourceOutput)) {
             Helper::instance()->window()->detach(layer, m_outputViewport);
         }
-        m_hardwareLayersOfPrimaryOutput.clear();
+        m_hardwareLayersOfSourceOutput.clear();
     }
 
     if (m_taskBar) {
@@ -199,9 +199,9 @@ Output::~Output()
     }
 }
 
-bool Output::isPrimary() const
+bool Output::isSource() const
 {
-    return m_type == Type::Primary;
+    return m_type == Type::Source;
 }
 
 void Output::updatePositionFromLayout()
@@ -477,17 +477,17 @@ void Output::updateOutputHardwareLayers()
     std::pair<WOutputViewport *, QQuickItem *> copyOutput = getOutputItemProperty();
     const auto layers = viewportPrimary->hardwareLayers();
     for (auto layer : layers) {
-        if (m_hardwareLayersOfPrimaryOutput.removeOne(layer))
+        if (m_hardwareLayersOfSourceOutput.removeOne(layer))
             continue;
         Helper::instance()->window()->attach(layer,
                                              copyOutput.first,
                                              viewportPrimary,
                                              copyOutput.second);
     }
-    for (auto oldLayer : std::as_const(m_hardwareLayersOfPrimaryOutput)) {
+    for (auto oldLayer : std::as_const(m_hardwareLayersOfSourceOutput)) {
         Helper::instance()->window()->detach(oldLayer, copyOutput.first);
     }
-    m_hardwareLayersOfPrimaryOutput = layers;
+    m_hardwareLayersOfSourceOutput = layers;
 }
 
 void Output::addSurface(SurfaceWrapper *surface)
@@ -1060,6 +1060,35 @@ QRectF Output::validGeometry() const
     return geometry().marginsRemoved(m_exclusiveZone);
 }
 
+QRectF Output::tileGeometry(SurfaceWrapper::TileMode mode) const
+{
+    if (mode == SurfaceWrapper::TileMode::None)
+        return QRectF();
+
+    const QRectF area = validGeometry();
+    const QSizeF half(area.width() / 2, area.height());
+    const QSizeF quad(area.width() / 2, area.height() / 2);
+    switch (mode) {
+    case SurfaceWrapper::TileMode::Left:
+        return QRectF(area.topLeft(), half);
+    case SurfaceWrapper::TileMode::Right:
+        return QRectF(QPointF(area.left() + area.width() / 2, area.top()), half);
+    case SurfaceWrapper::TileMode::Maximize:
+        return area;
+    case SurfaceWrapper::TileMode::TopLeft:
+        return QRectF(area.topLeft(), quad);
+    case SurfaceWrapper::TileMode::TopRight:
+        return QRectF(QPointF(area.left() + area.width() / 2, area.top()), quad);
+    case SurfaceWrapper::TileMode::BottomLeft:
+        return QRectF(QPointF(area.left(), area.top() + area.height() / 2), quad);
+    case SurfaceWrapper::TileMode::BottomRight:
+        return QRectF(QPointF(area.left() + area.width() / 2, area.top() + area.height() / 2), quad);
+    case SurfaceWrapper::TileMode::None:
+        break;
+    }
+    return QRectF();
+}
+
 // do not use config()->setBrightness or config()->setColorTemperature to set color temperature or brightness
 // as doing so will have no effect.
 // use Output::setOutputColor instead
@@ -1191,10 +1220,18 @@ void Output::setOutputColor(qreal brightness,
     WOutputHelper::ExtraState newState;
     auto *viewport = screenViewport();
     auto *renderWindow = screenViewport()->outputRenderWindow();
-    wlr_output_state_set_gamma_lut(newState.get(), gammaSize,
-                                   r.constData(),
-                                   g.constData(),
-                                   b.constData());
+    auto *tr = wlr_color_transform_init_lut_3x1d(gammaSize,
+                                                   r.constData(),
+                                                   g.constData(),
+                                                   b.constData());
+    if (!tr) {
+        qCWarning(lcTlOutput) << "Failed to create color transform for lut_3x1d on output" << output()->name();
+        if (resultCallback)
+            resultCallback(false);
+        return;
+    }
+    wlr_output_state_set_color_transform(newState.get(), tr);
+    wlr_color_transform_unref(tr);
 
     auto *outputHelper = renderWindow->getOutputHelper(viewport);
     outputHelper->setExtraState(newState);

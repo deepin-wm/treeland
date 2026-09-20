@@ -44,8 +44,8 @@ QSize WXWaylandSurfaceItemPrivate::expectSurfaceSize() const
 
     if (q->resizeMode() == SizeFromSurface) {
         const bool useRequestSize = !q->xwaylandSurface()->isBypassManager()
-            && q->xwaylandSurface()->requestConfigureFlags()
-                   .testAnyFlags(WXWaylandSurface::XCB_CONFIG_WINDOW_SIZE);
+        && q->xwaylandSurface()->requestConfigureFlags()
+              .testAnyFlags(WXWaylandSurface::XCB_CONFIG_WINDOW_SIZE);
         return useRequestSize
             ? q->xwaylandSurface()->requestConfigureGeometry().size()
             : q->xwaylandSurface()->geometry().size();
@@ -85,6 +85,8 @@ WXWaylandSurface *WXWaylandSurfaceItem::xwaylandSurface() const
 
 bool WXWaylandSurfaceItem::setShellSurface(WToplevelSurface *surface)
 {
+    Q_D(WXWaylandSurfaceItem);
+
     if (!WSurfaceItem::setShellSurface(surface))
         return false;
 
@@ -107,11 +109,15 @@ bool WXWaylandSurfaceItem::setShellSurface(WToplevelSurface *surface)
                 resize(rm);
             }
         };
-        QObject::connect(xwaylandSurface(), &WXWaylandSurface::requestConfigure, this, [this] {
+        QObject::connect(xwaylandSurface(), &WXWaylandSurface::requestConfigure, this, [this, d] {
             if (xwaylandSurface()->requestConfigureFlags().testAnyFlags(
                     WXWaylandSurface::ConfigureFlag::XCB_CONFIG_WINDOW_POSITION)) {
                 Q_EMIT implicitPositionChanged();
             }
+
+            // send back a ConfigureNotify event with the computed geometry.
+            d->configureSurface(QRect(d->explicitSurfacePosition(),
+                                      d->expectSurfaceSize()));
         });
         QObject::connect(xwaylandSurface(), &WXWaylandSurface::geometryChanged, this, updateGeometry);
         connect(this, &WXWaylandSurfaceItem::topPaddingChanged,
@@ -177,6 +183,7 @@ QPointF WXWaylandSurfaceItem::implicitPosition() const
     const Q_D(WXWaylandSurfaceItem);
 
     auto xwaylandSurface = qobject_cast<WXWaylandSurface *>(d->shellSurface);
+    Q_ASSERT(xwaylandSurface);
 
     const QPoint epos = xwaylandSurface->requestConfigureGeometry().topLeft();
     const qreal ssr = d->surfaceSizeRatio;
@@ -239,6 +246,7 @@ void WXWaylandSurfaceItem::surfaceSizeRatioChange()
 
     W_DC(WXWaylandSurfaceItem);
 
+    Q_ASSERT(d->shellSurface);
     if (d->positionConfigured) {
         updatePosition();
     } else {

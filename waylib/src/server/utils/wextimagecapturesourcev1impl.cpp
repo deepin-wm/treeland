@@ -115,7 +115,7 @@ struct ConstraintBuilder {
 const struct wlr_ext_image_capture_source_v1_interface WExtImageCaptureSourceV1Impl::impl = {
     .start = WExtImageCaptureSourceV1Impl::start,
     .stop = WExtImageCaptureSourceV1Impl::stop,
-    .schedule_frame = WExtImageCaptureSourceV1Impl::schedule_frame,
+    .request_frame = WExtImageCaptureSourceV1Impl::request_frame,
     .copy_frame = WExtImageCaptureSourceV1Impl::copy_frame,
     .get_pointer_cursor = WExtImageCaptureSourceV1Impl::get_pointer_cursor,
 };
@@ -241,14 +241,14 @@ void WExtImageCaptureSourceV1Impl::stop()
     }
 }
 
-void WExtImageCaptureSourceV1Impl::schedule_frame(struct wlr_ext_image_capture_source_v1 *source)
+void WExtImageCaptureSourceV1Impl::request_frame(struct wlr_ext_image_capture_source_v1 *source, bool schedule_frame)
 {
     auto *self = s_captureSourceMap.value(source);
     Q_ASSERT(self);
-    self->schedule_frame();
+    self->schedule_frame(schedule_frame);
 }
 
-void WExtImageCaptureSourceV1Impl::schedule_frame()
+void WExtImageCaptureSourceV1Impl::schedule_frame(bool schedule_frame)
 {
     qCDebug(lcWlImageCapture) << "WExtImageCaptureSourceV1Impl::schedule_frame()";
 
@@ -262,8 +262,10 @@ void WExtImageCaptureSourceV1Impl::schedule_frame()
         return;
     }
 
-    // Request output update to ensure next frame will be rendered
-    wlr_output_update_needs_frame(m_output->handle());
+    if (schedule_frame) {
+        // Request output update to ensure next frame will be rendered
+        wlr_output_update_needs_frame(m_output->handle());
+    }
 
     // Get render window to check if currently rendering
     auto textureProvider = m_surfaceContent->wTextureProvider();
@@ -339,7 +341,7 @@ void WExtImageCaptureSourceV1Impl::copy_frame(wlr_ext_image_copy_capture_frame_v
         return;
     }
 
-    auto buffer = textureProvider->qwBuffer();
+    auto buffer = textureProvider->wlrBuffer();
     if (!buffer) {
         qCWarning(lcWlImageCapture) << "No internal buffer available";
         wlr_ext_image_copy_capture_frame_v1_fail(dst_frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
