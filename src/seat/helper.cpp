@@ -56,6 +56,7 @@
 #include "session/session.h"
 #include "surface/surfacecontainer.h"
 #include "surface/surfacewrapper.h"
+#include <wsurfaceitem.h>
 #include "treelandconfig.hpp"
 #include "treelanduserconfig.hpp"
 #include "utils/cmdline.h"
@@ -3647,24 +3648,71 @@ void Helper::handleNewForeignToplevelCaptureRequest(wlr_ext_foreign_toplevel_ima
         return;
     }
 
-    WSurfaceItemContent *surfaceContent = surfaceItem->findItemContent();
-    if (!surfaceContent) {
-        qCWarning(lcTlCapture) << "Could not find WSurfaceItemContent";
-        return;
-    }
-
-    qCDebug(lcTlCapture) << "Found WSurfaceItemContent for capture:"
-             << "size=" << surfaceContent->size()
-             << "implicitSize=" << QSizeF(surfaceContent->implicitWidth(), surfaceContent->implicitHeight())
-             << "isTextureProvider=" << surfaceContent->isTextureProvider();
-
-    auto *output = surfaceWrapper->ownsOutput()->output();
+    auto *output = surfaceWrapper->ownsOutput() ? surfaceWrapper->ownsOutput()->output() : nullptr;
     if (!output) {
         qCWarning(lcTlCapture) << "Could not get WOutput from SurfaceWrapper";
         return;
     }
 
-    auto *imageCaptureSource = new WExtImageCaptureSourceV1Impl(surfaceContent, output);
+    auto *surfaceItem = surfaceWrapper->surfaceItem();
+    if (!surfaceItem) {
+        qCWarning(lcTlCapture) << "Could not get WSurfaceItem from SurfaceWrapper";
+        return;
+    }
+
+    // Capture the window subtree (title bar, client surface, its subsurfaces
+    // and the border) by rendering the wrapper's surface item into a
+    // dedicated offscreen OutputViewport, and let the capture source read the
+    // viewport's buffer. The viewport only renders this subtree, not a region
+    // of the full scene, so overlapping windows never leak into the capture.
+    //
+    // The shadow is part of the wrapper-level decoration item (a sibling of
+    // the surface item) and therefore stays out of the capture. The frame
+    // origin is the surface item's own top-left, so the window keeps its
+    // on-screen alignment inside the captured image.
+    auto *viewport = new WOutputViewport(m_renderWindow->contentItem());
+    viewport->setInput(surfaceItem);
+    viewport->setOutput(output);
+    viewport->setDevicePixelRatio(output->scale());
+    viewport->setLive(false); // never driven by the output frame loop; rendered explicitly by the capture source
+    viewport->setOffscreen(true); // never commit the capture buffer to the output
+    viewport->setIgnoreViewport(true); // render the input subtree in item-local coordinates
+    viewport->setHideSource(false); // keep the window visible on screen while capturing
+    // The capture source reads the viewport's buffer through the texture
+    // provider; cacheBuffer keeps the provider tracking every rendered buffer.
+    viewport->setCacheBuffer(true);
+
+    const auto updateGeometry = [viewport, surfaceItem, output]() {
+        const QRectF bounds = surfaceItem->boundingRect();
+        if (bounds.isEmpty()) {
+            // Unmapped/minimized: keep the current geometry, the next
+            // boundingRectChanged will restore the capture geometry.
+            return;
+        }
+        viewport->setSourceRect(bounds);
+        const qreal scale = output->scale();
+        const QSize pixelSize(qRound(bounds.width() * scale), qRound(bounds.height() * scale));
+        viewport->setRenderPixelSize(pixelSize);
+        // targetRect in logical coordinates; with ignoreViewport the frame
+        // content is the input item's subtree in item-local coordinates, so
+        // the logical frame size is exactly the bounds' size.
+        viewport->setTargetRect(QRectF(QPointF(0, 0), bounds.size()));
+    };
+    updateGeometry();
+
+    connect(surfaceItem, &WSurfaceItem::boundingRectChanged, viewport, updateGeometry);
+    connect(output, &WOutput::scaleChanged, viewport, [viewport, output, updateGeometry] {
+        viewport->setDevicePixelRatio(output->scale());
+        updateGeometry();
+    });
+    connect(surfaceItem, &QObject::destroyed, viewport, &QObject::deleteLater);
+
+    qCDebug(lcTlCapture) << "Created OutputViewport for toplevel capture:"
+             << "bounds=" << surfaceItem->boundingRect()
+             << "pixelSize=" << viewport->renderPixelSize()
+             << "devicePixelRatio=" << viewport->devicePixelRatio();
+
+    auto *imageCaptureSource = new WExtImageCaptureSourceV1Impl(viewport, request->client);
 
     bool success = wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
         request, imageCaptureSource->handle());
