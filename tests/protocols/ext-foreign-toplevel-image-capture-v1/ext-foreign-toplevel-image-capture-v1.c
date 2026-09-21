@@ -12,6 +12,7 @@
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
+#include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 
 #include <fcntl.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <math.h>
 
 extern void ext_capture_query_state(void *data);
 extern void ext_capture_force_render(void *data);
@@ -45,6 +47,9 @@ struct capture_client {
     struct ext_foreign_toplevel_list_v1 *toplevel_list;
     struct ext_foreign_toplevel_handle_v1 *toplevel_handle;
     int handle_seen;
+
+    struct zwlr_screencopy_manager_v1 *screencopy_manager;
+    struct wl_output *wl_output;
 
     struct ext_foreign_toplevel_image_capture_source_manager_v1 *capture_manager;
     struct ext_image_copy_capture_manager_v1 *copy_manager;
@@ -460,7 +465,8 @@ static int create_target_buffer(struct capture_client *client)
 {
     const size_t size = (size_t)client->buffer_width * 4 * client->buffer_height;
     char name[64];
-    snprintf(name, sizeof(name), "/ext_capture_target_%d", (int)getpid());
+    snprintf(name, sizeof(name), "/ext_capture_target_%d_%u", (int)getpid(),
+             (unsigned)client->buffer_width * (unsigned)client->buffer_height);
     const int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd < 0)
         return 0;
@@ -499,6 +505,12 @@ static int wait_session_done(struct capture_client *client)
         if (wl_display_dispatch(client->connection.display) < 0)
             return 0;
     }
+    /* Repeated constraints_update events (one per render) keep done flags
+     * constantly refreshed; wait until one arrives with the current size. */
+    for (int i = 0; i < 100 && !client->have_size; i++) {
+        if (wl_display_dispatch(client->connection.display) < 0)
+            return 0;
+    }
     return client->session_done && client->have_size && client->have_shm_format;
 }
 
@@ -532,10 +544,7 @@ static int capture_one_frame(struct capture_client *client)
     return client->frame_ready;
 }
 
-/* ------------------------------------------------------------------ */
-/* pixel verification                                                  */
-/* ------------------------------------------------------------------ */
-
+/* pixel classification shared by capture-frame and output-frame checks */
 static int pixel_is_red(const struct capture_client *client, uint32_t pixel)
 {
     switch (client->shm_format) {
@@ -568,6 +577,251 @@ static int pixel_is_green(const struct capture_client *client, uint32_t pixel)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* main-render verification: screencopy the output and locate the      */
+/* captured window on screen while the capture session is active.      */
+/* ------------------------------------------------------------------ */
+
+struct output_frame {
+    void *data;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t format;
+};
+
+struct screencopy_state {
+    struct output_frame frame;
+    int ready;
+    int failed;
+};
+
+static void sc_buffer(void *data, struct zwlr_screencopy_frame_v1 *frame,
+                      uint32_t format, uint32_t width, uint32_t height, uint32_t stride)
+{
+    (void)frame;
+    struct screencopy_state *sc = data;
+    sc->frame.format = format;
+    sc->frame.width = width;
+    sc->frame.height = height;
+    sc->frame.stride = stride;
+}
+
+static void sc_flags(void *data, struct zwlr_screencopy_frame_v1 *frame, uint32_t flags)
+{
+    (void)data;
+    (void)frame;
+    (void)flags;
+}
+
+static void sc_damage(void *data, struct zwlr_screencopy_frame_v1 *frame,
+                      uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    (void)data;
+    (void)frame;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+}
+
+static void sc_linux_dmabuf(void *data, struct zwlr_screencopy_frame_v1 *frame,
+                            uint32_t format, uint32_t width, uint32_t height)
+{
+    (void)data;
+    (void)frame;
+    (void)format;
+    (void)width;
+    (void)height;
+}
+
+static void sc_ready(void *data, struct zwlr_screencopy_frame_v1 *frame,
+                     uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
+{
+    (void)frame;
+    (void)tv_sec_hi;
+    (void)tv_sec_lo;
+    (void)tv_nsec;
+    ((struct screencopy_state *)data)->ready = 1;
+}
+
+static void sc_failed(void *data, struct zwlr_screencopy_frame_v1 *frame)
+{
+    (void)frame;
+    ((struct screencopy_state *)data)->failed = 1;
+}
+
+static const struct zwlr_screencopy_frame_v1_listener sc_listener = {
+    .buffer = sc_buffer,
+    .flags = sc_flags,
+    .ready = sc_ready,
+    .failed = sc_failed,
+    .damage = sc_damage,
+    .linux_dmabuf = sc_linux_dmabuf,
+};
+
+static void free_output_frame(struct output_frame *f)
+{
+    if (f->data)
+        munmap(f->data, (size_t)f->stride * f->height);
+    memset(f, 0, sizeof(*f));
+}
+
+/* Copy the whole output through wlr-screencopy and return its pixels. */
+static int capture_output_frame(struct capture_client *client, struct output_frame *out)
+{
+    struct screencopy_state sc = { 0 };
+    struct zwlr_screencopy_frame_v1 *frame =
+        zwlr_screencopy_manager_v1_capture_output(client->screencopy_manager, 0,
+                                                  client->wl_output);
+    if (!frame)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    zwlr_screencopy_frame_v1_add_listener(frame, &sc_listener, &sc);
+    if (wl_display_roundtrip(client->connection.display) < 0 || !sc.frame.width
+        || !sc.frame.height || !sc.frame.stride)
+        goto fail;
+
+    const size_t size = (size_t)sc.frame.stride * sc.frame.height;
+    char name[64];
+    snprintf(name, sizeof(name), "/ext_capture_output_%d", (int)getpid());
+    const int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0)
+        goto fail;
+    shm_unlink(name);
+    if (ftruncate(fd, (off_t)size) < 0) {
+        close(fd);
+        goto fail;
+    }
+    out->data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (out->data == MAP_FAILED) {
+        out->data = NULL;
+        close(fd);
+        goto fail;
+    }
+    memset(out->data, 0, size);
+    struct wl_shm_pool *pool = wl_shm_create_pool(client->toplevel.shm, fd, (int)size);
+    close(fd);
+    if (!pool) {
+        munmap(out->data, size);
+        out->data = NULL;
+        goto fail;
+    }
+    struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, (int)sc.frame.width,
+        (int)sc.frame.height, (int)sc.frame.stride, sc.frame.format);
+    wl_shm_pool_destroy(pool);
+    if (!buffer) {
+        munmap(out->data, size);
+        out->data = NULL;
+        goto fail;
+    }
+    out->width = sc.frame.width;
+    out->height = sc.frame.height;
+    out->stride = sc.frame.stride;
+    out->format = sc.frame.format;
+
+    zwlr_screencopy_frame_v1_copy(frame, buffer);
+    wl_display_flush(client->connection.display);
+    /* Protocol barrier, then drive one production render pass on the server.
+     * screencopy needs the output to commit a frame with our buffer attached
+     * (attach_render lock); without driving the render loop explicitly the
+     * ready event would only come from the next compositor-driven frame. */
+    if (wl_display_roundtrip(client->connection.display) < 0) {
+        wl_buffer_destroy(buffer);
+        goto fail;
+    }
+    if (!invoke_on_server_thread(ext_capture_force_render, NULL)) {
+        wl_buffer_destroy(buffer);
+        goto fail;
+    }
+    /* The output commit is asynchronous; wait for the ready event but fail
+     * loudly after a bounded number of dispatches instead of hanging. */
+    wl_buffer_destroy(buffer);
+    int waited = 0;
+    while (!sc.ready && !sc.failed && waited < 200) {
+        if (wl_display_roundtrip(client->connection.display) < 0)
+            goto fail;
+        waited++;
+    }
+    zwlr_screencopy_frame_v1_destroy(frame);
+    if (!sc.ready) {
+        fprintf(stderr, "output screencopy: no ready event after %d roundtrips (failed=%d)\n",
+                waited, sc.failed);
+        free_output_frame(out);
+        return 0;
+    }
+    return 1;
+fail:
+    zwlr_screencopy_frame_v1_destroy(frame);
+    free_output_frame(out);
+    return 0;
+}
+
+static uint32_t frame_pixel(const struct output_frame *f, uint32_t x, uint32_t y)
+{
+    const char *line = (const char *)f->data + (size_t)y * f->stride;
+    uint32_t pixel;
+    memcpy(&pixel, line + (size_t)x * 4, sizeof(pixel));
+    return pixel;
+}
+
+/* Find the top-left of a solid block_size×block_size block of the given
+ * color in the output frame; returns 1 when found. */
+static int find_color_block(const struct output_frame *f, uint32_t shm_format,
+                            int (*is_color)(const struct capture_client *, uint32_t),
+                            uint32_t block_size, uint32_t *ox, uint32_t *oy)
+{
+    struct capture_client fmt = { 0 };
+    fmt.shm_format = shm_format;
+    for (uint32_t y = 0; y + block_size <= f->height; y++) {
+        for (uint32_t x = 0; x + block_size <= f->width; x++) {
+            if (is_color(&fmt, frame_pixel(f, x, y))
+                && is_color(&fmt, frame_pixel(f, x + block_size - 1, y))
+                && is_color(&fmt, frame_pixel(f, x, y + block_size - 1))
+                && is_color(&fmt, frame_pixel(f, x + block_size - 1, y + block_size - 1))) {
+                *ox = x;
+                *oy = y;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The compositor's main render must show the captured window exactly where
+ * the compositor placed it, whether or not a capture session is running.
+ * expected_x/y = green subsurface position in output coordinates. */
+static int verify_window_on_screen(struct capture_client *client,
+                                   const struct ext_capture_state *state)
+{
+    struct output_frame out;
+    if (!capture_output_frame(client, &out)) {
+        fprintf(stderr, "output screencopy failed\n");
+        return 0;
+    }
+    uint32_t gx = UINT32_MAX, gy = UINT32_MAX;
+    const int found = find_color_block(&out, out.format, pixel_is_green, SUB_SIZE, &gx, &gy);
+    free_output_frame(&out);
+    if (!found) {
+        fprintf(stderr, "window not found in the main render (green block missing)\n");
+        return 0;
+    }
+    const int32_t expected_x = state->wrapper_x + SUB_POS;
+    const int32_t expected_y = state->wrapper_y + state->content_y + SUB_POS;
+    if (abs((int32_t)gx - expected_x) > 1 || abs((int32_t)gy - expected_y) > 1) {
+        fprintf(stderr,
+                "main render position jump: green block at (%u,%u), expected (%d,%d)\n",
+                gx, gy, expected_x, expected_y);
+        return 0;
+    }
+    return 1;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* capture-frame pixel verification                                    */
+/* ------------------------------------------------------------------ */
+
 static uint32_t pixel_at(const struct capture_client *client, uint32_t x, uint32_t y)
 {
     const uint32_t *line = (const uint32_t *)(client->target_data);
@@ -578,8 +832,12 @@ static uint32_t pixel_at(const struct capture_client *client, uint32_t x, uint32
  * main surface (red), its subsurface (green on top of the red content) and
  * the compositor-side decoration (title bar) around it. The content region
  * is located through the subsurface, which cannot be confused with the
- * decoration chrome. */
-static int verify_subtree_pixels(const struct capture_client *client)
+ * decoration chrome. expected_gx/gy pin the subsurface to its exact position
+ * inside the capture frame: the frame origin is the surface item's top-left
+ * (title bar above the content), so any shadow margin or misalignment of
+ * the window inside the frame shows up here. */
+static int verify_subtree_pixels(const struct capture_client *client,
+                                 uint32_t expected_gx, uint32_t expected_gy)
 {
     /* Locate the 16x16 green subsurface block. */
     uint32_t gx = UINT32_MAX, gy = UINT32_MAX;
@@ -596,6 +854,12 @@ static int verify_subtree_pixels(const struct capture_client *client)
     }
     if (gx == UINT32_MAX) {
         fprintf(stderr, "subsurface (green block) not found in capture\n");
+        return 0;
+    }
+    if (gx != expected_gx || gy != expected_gy) {
+        fprintf(stderr,
+                "window misplaced in the capture: green block at (%u,%u), expected (%u,%u)\n",
+                gx, gy, expected_gx, expected_gy);
         return 0;
     }
     if (gx + SUB_SIZE > client->buffer_width
@@ -679,6 +943,10 @@ static void cleanup(struct capture_client *client)
         ext_image_copy_capture_session_v1_destroy(client->session);
     if (client->source)
         ext_image_capture_source_v1_destroy(client->source);
+    if (client->screencopy_manager)
+        zwlr_screencopy_manager_v1_destroy(client->screencopy_manager);
+    if (client->wl_output)
+        wl_output_destroy(client->wl_output);
     if (client->toplevel_list)
         ext_foreign_toplevel_list_v1_destroy(client->toplevel_list);
     if (client->capture_manager)
@@ -745,6 +1013,11 @@ int protocol_test_run(const char *socket_name)
     client.capture_manager = client_bind(&client.connection,
         ext_foreign_toplevel_image_capture_source_manager_v1_interface.name,
         &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1);
+    client.wl_output = client_bind(&client.connection, "wl_output",
+                                   &wl_output_interface, 1);
+    client.screencopy_manager = client_bind(&client.connection,
+        zwlr_screencopy_manager_v1_interface.name,
+        &zwlr_screencopy_manager_v1_interface, 1);
     if (!client.toplevel_list || !client.capture_manager) {
         fprintf(stderr, "capture globals missing: list=%p capture=%p\n",
                 (void *)client.toplevel_list, (void *)client.capture_manager);
@@ -794,13 +1067,19 @@ int protocol_test_run(const char *socket_name)
     fprintf(stderr, "session constraints: %ux%u fmt 0x%x\n",
             client.buffer_width, client.buffer_height, client.shm_format);
 
-    /* The advertised size must be the whole window subtree (decoration +
-     * main surface), not just the 64x64 client surface. */
+    /* The advertised size must be the whole window subtree (title bar +
+     * main surface), without the shadow margins. */
     if (client.buffer_width != (uint32_t)state.wrapper_width
         || client.buffer_height != (uint32_t)state.wrapper_height) {
         fprintf(stderr, "capture size %ux%u != window subtree size %dx%d\n",
                 client.buffer_width, client.buffer_height,
                 state.wrapper_width, state.wrapper_height);
+        goto done;
+    }
+    /* No shadow: the capture is no taller than the title bar + content. */
+    if (client.buffer_height > (uint32_t)(state.content_y + CONTENT_SIZE)) {
+        fprintf(stderr, "capture carries margins (height %u, content needs %d)\n",
+                client.buffer_height, state.content_y + CONTENT_SIZE);
         goto done;
     }
 
@@ -815,9 +1094,90 @@ int protocol_test_run(const char *socket_name)
             goto done;
         }
         if (i == 0) {
-            if (!verify_subtree_pixels(&client))
+            if (!verify_subtree_pixels(&client, SUB_POS,
+                                       (uint32_t)state.content_y + SUB_POS))
                 goto done;
         }
+    }
+
+    /* Main render while capturing: the window must stay exactly where the
+     * compositor put it (no repositioning/misrendering from the capture). */
+    fprintf(stderr, "calling verify_window_on_screen\n");
+    fflush(stderr);
+    if (!verify_window_on_screen(&client, &state))
+        goto done;
+    fprintf(stderr, "verify_window_on_screen passed\n");
+    fflush(stderr);
+
+    /* Resize the captured window while the session is running: the capture
+     * constraints must follow, and the main render must not jump. */
+    fprintf(stderr, "before resize\n");
+    fflush(stderr);
+    {
+        struct wl_buffer *bigger = make_solid_buffer(client.toplevel.shm,
+                                                     80, 80, MAIN_COLOR, NULL);
+        if (!bigger)
+            goto done;
+        wl_surface_attach(client.toplevel.surface, bigger, 0, 0);
+        wl_surface_damage(client.toplevel.surface, 0, 0, 80, 80);
+        wl_surface_commit(client.toplevel.surface);
+        wl_display_flush(client.connection.display);
+        /* The client buffer change needs a frame on the output before the
+         * compositor applies it; drive one render explicitly. */
+        invoke_on_server_thread(ext_capture_force_render, NULL);
+        wl_display_roundtrip(client.connection.display);
+
+        struct ext_capture_state resized = { 0 };
+        int resized_ok = 0;
+        for (int i = 0; i < 100 && !resized_ok; i++) {
+            if (wl_display_roundtrip(client.connection.display) < 0)
+                break;
+            if (!invoke_on_server_thread(ext_capture_query_state, &resized))
+                break;
+            resized_ok = resized.wrapper_ready && resized.wrapper_width == 80
+                && (uint32_t)resized.wrapper_height
+                    == (uint32_t)(resized.content_y + 80);
+        }
+        if (!resized_ok) {
+            fprintf(stderr, "window resize not picked up (wrapper %dx%d)\n",
+                    resized.wrapper_width, resized.wrapper_height);
+            wl_buffer_destroy(bigger);
+            goto done;
+        }
+        wl_buffer_destroy(bigger);
+        fprintf(stderr, "resized to %dx%d (title bar %d)\n",
+                resized.wrapper_width, resized.wrapper_height, resized.content_y);
+        fflush(stderr);
+
+        /* The capture source must announce the new size (constraints_update). */
+        client.have_size = 0;
+        int got_new_size = 0;
+        for (int i = 0; i < 100 && !got_new_size; i++) {
+            if (wl_display_roundtrip(client.connection.display) < 0)
+                break;
+            got_new_size = client.buffer_width == (uint32_t)resized.wrapper_width
+                && client.buffer_height == (uint32_t)resized.wrapper_height;
+        }
+        if (!got_new_size) {
+            fprintf(stderr, "capture size not updated after resize: %ux%u vs %dx%d\n",
+                    client.buffer_width, client.buffer_height,
+                    resized.wrapper_width, resized.wrapper_height);
+            goto done;
+        }
+        wl_buffer_destroy(client.target_buffer);
+        munmap(client.target_data, client.target_size);
+        client.target_buffer = NULL;
+        client.target_data = NULL;
+        if (!create_target_buffer(&client))
+            goto done;
+        if (!capture_one_frame(&client)
+            || !verify_subtree_pixels(&client, SUB_POS,
+                                      (uint32_t)resized.content_y + SUB_POS))
+            goto done;
+
+        /* The on-screen position must be unchanged by capture + resize. */
+        if (!verify_window_on_screen(&client, &resized))
+            goto done;
     }
 
     /* Capture end: the source must be reusable by a new session (stop/start). */

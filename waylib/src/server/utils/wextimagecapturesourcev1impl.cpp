@@ -286,10 +286,6 @@ void WExtImageCaptureSourceV1Impl::start(bool with_cursors)
         return;
     }
 
-    // The viewport is driven by the render window of its output; enable its
-    // live rendering while a capture session is active.
-    m_viewport->setLive(true);
-
     if (m_renderEndConnection) {
         disconnect(m_renderEndConnection);
         m_renderEndConnection = QMetaObject::Connection();
@@ -312,17 +308,10 @@ void WExtImageCaptureSourceV1Impl::start(bool with_cursors)
         qCWarning(lcWlImageCapture) << "Cannot connect to render end of output render window";
     }
 
-    // Produce the first buffer right away: the viewport is idle otherwise and
-    // clients would wait for a frame that never gets rendered. The explicit
-    // render is forced (ignores dirty state) and committed; the offscreen
-    // viewport turns that commit into a no-op for the physical output.
-    if (!renderWindow->inRendering())
-        renderWindow->render(m_viewport, true);
-
-    // If not currently rendering, trigger immediately
-    if (!renderWindow->inRendering()) {
-        QMetaObject::invokeMethod(this, &WExtImageCaptureSourceV1Impl::handleRenderEnd, Qt::AutoConnection);
-    }
+    // Produce the first buffer right away and announce it: the viewport is
+    // never rendered by the output's own frame loop (it stays non-live), so
+    // every announcement renders the viewport explicitly via announceFrame().
+    announceFrame();
 }
 
 void WExtImageCaptureSourceV1Impl::stop(struct wlr_ext_image_capture_source_v1 *source)
@@ -342,11 +331,6 @@ void WExtImageCaptureSourceV1Impl::stop()
         disconnect(m_renderEndConnection);
         m_renderEndConnection = QMetaObject::Connection();
     }
-
-    // Stop the per-frame rendering of the viewport until a new capture
-    // session starts on this source.
-    if (m_viewport)
-        m_viewport->setLive(false);
 }
 
 void WExtImageCaptureSourceV1Impl::request_frame(struct wlr_ext_image_capture_source_v1 *source, bool schedule_frame)
@@ -356,7 +340,7 @@ void WExtImageCaptureSourceV1Impl::request_frame(struct wlr_ext_image_capture_so
     self->schedule_frame(schedule_frame);
 }
 
-void WExtImageCaptureSourceV1Impl::schedule_frame(bool schedule_frame)
+void WExtImageCaptureSourceV1Impl::schedule_frame([[maybe_unused]] bool schedule_frame)
 {
     qCDebug(lcWlImageCapture) << "WExtImageCaptureSourceV1Impl::schedule_frame()";
 
@@ -365,36 +349,30 @@ void WExtImageCaptureSourceV1Impl::schedule_frame(bool schedule_frame)
         return;
     }
 
-    if (!m_viewport || !m_output) {
+    if (!m_viewport) {
         qCWarning(lcWlImageCapture) << "No viewport available for frame scheduling";
         return;
     }
 
-    if (schedule_frame) {
-        // Request output update to ensure next frame will be rendered. The
-        // update triggers waylib's needs_frame wiring, which schedules the
-        // frame on the output.
-        wlr_output_update_needs_frame(m_output->handle());
-        // TODO: Frames are driven by the output's render loop; when the owning
-        // output is disabled (e.g. screen off) capture freezes silently until
-        // the output is enabled again. The viewport owns its swapchain, so a
-        // self-driven frame timer could decouple capture from the output.
-    }
-
-    auto renderWindow = m_viewport->outputRenderWindow();
-    if (renderWindow && !renderWindow->inRendering()) {
-        QMetaObject::invokeMethod(this, &WExtImageCaptureSourceV1Impl::handleRenderEnd, Qt::AutoConnection);
-    }
+    // The client asks for the next frame: render the capture viewport
+    // explicitly and announce the result. The capture viewport is never
+    // rendered by the output's frame loop (it stays non-live), so capturing
+    // never forces the physical output to repaint.
+    announceFrame();
 
     qCDebug(lcWlImageCapture) << "Scheduled frame capture";
 }
 
 void WExtImageCaptureSourceV1Impl::handleRenderEnd()
 {
-    qCDebug(lcWlImageCapture) << "WExtImageCaptureSourceV1Impl::handleRenderEnd() - triggering frame event";
+    // Window render end: announce a fresh capture frame when a session is
+    // active (same pump as schedule_frame).
+    announceFrame();
+}
 
+void WExtImageCaptureSourceV1Impl::announceFrame()
+{
     if (!m_capturing) {
-        qCWarning(lcWlImageCapture) << "handleRenderEnd called but not capturing";
         return;
     }
 
@@ -402,6 +380,19 @@ void WExtImageCaptureSourceV1Impl::handleRenderEnd()
         qCWarning(lcWlImageCapture) << "No viewport available for frame event";
         return;
     }
+
+    // Render the viewport explicitly so the announced frame carries the
+    // current content. The explicit render re-emits renderEnd (hence
+    // handleRenderEnd); m_announcing collapses that recursion so exactly one
+    // frame event is announced per pump.
+    if (m_announcing)
+        return;
+    m_announcing = true;
+    if (auto renderWindow = m_viewport->outputRenderWindow()) {
+        if (!renderWindow->inRendering())
+            renderWindow->render(m_viewport, true);
+    }
+    m_announcing = false;
 
     // Don't announce frames before the viewport has rendered its first buffer,
     // clients would only get a failing copy.
@@ -412,7 +403,7 @@ void WExtImageCaptureSourceV1Impl::handleRenderEnd()
     }
 
     // Get pixel size and validate it
-    QSize pixelSize = currentPixelSize();
+    const QSize pixelSize = currentPixelSize();
     if (pixelSize.width() <= 0 || pixelSize.height() <= 0) {
         qCWarning(lcWlImageCapture) << "Invalid pixel size for damage region:" << pixelSize;
         return;

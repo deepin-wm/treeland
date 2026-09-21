@@ -43,6 +43,7 @@ private:
     static const struct wlr_ext_image_capture_source_v1_interface impl;
     QSize currentPixelSize() const;
     void updateConstraints();
+    void announceFrame();
     void start(bool with_cursors);
     void stop();
     void schedule_frame(bool schedule_frame);
@@ -69,6 +70,7 @@ private:
     struct ClientDestroyGuard *m_clientDestroyGuard;
     QTimer *m_idleReclaimTimer;
     bool m_capturing;
+    bool m_announcing = false;
     QMetaObject::Connection m_renderEndConnection;
 };
 

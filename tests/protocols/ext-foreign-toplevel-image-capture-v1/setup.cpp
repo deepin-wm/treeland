@@ -24,6 +24,9 @@ void protocol_test_setup(Helper *helper)
                      [helper](SurfaceWrapper *wrapper) {
                          if (wrapper->type() != SurfaceWrapper::Type::XdgToplevel)
                              return;
+                         // Deterministic geometry: no open/resize animations,
+                         // so screencopy positions can be compared exactly.
+                         wrapper->disableWindowAnimation();
                          g_wrapper = wrapper;
                      });
 }
@@ -48,20 +51,34 @@ void ext_capture_query_state(void *data)
         helper->window()->contentItem(), [](QQuickItem *) { return true; });
     state->content_in_paint_order = content && paintOrder.contains(content) ? 1 : 0;
 
-    // The capture source renders exactly this subtree geometry.
-    const QRectF bounds = g_wrapper->boundingRect();
+    // The capture source renders the surface-item subtree (title bar +
+    // client content + subsurfaces), which excludes the shadow: the shadow
+    // lives in the wrapper-level decoration item, a sibling of the item.
+    auto *surfaceItem = g_wrapper->surfaceItem();
+    const QRectF bounds = surfaceItem ? surfaceItem->boundingRect()
+                                      : g_wrapper->boundingRect();
     state->wrapper_width = qRound(bounds.width());
     state->wrapper_height = qRound(bounds.height());
-    if (g_wrapper->surfaceItem()) {
-        // Scale is 1 on the headless output; report in buffer coordinates.
-        const QPointF offset = g_wrapper->surfaceItem()->position() - bounds.topLeft();
+    // Position of the window on the output (for the main-render checks).
+    const QPointF scenePos = g_wrapper->mapToScene(QPointF(0, 0));
+    state->wrapper_x = qRound(scenePos.x());
+    state->wrapper_y = qRound(scenePos.y());
+    if (surfaceItem) {
+        // The client content sits below the title bar inside the capture:
+        // report its offset relative to the capture origin.
+        const QPointF itemOrigin = surfaceItem->mapFromItem(content, QPointF(0, 0));
+        const QPointF offset = itemOrigin - bounds.topLeft();
         state->content_x = qRound(offset.x());
         state->content_y = qRound(offset.y());
+        state->titlebar_height = state->content_y;
     }
 }
 
 void ext_capture_force_render(void *data)
 {
     Q_UNUSED(data);
-    Helper::instance()->window()->render();
+    auto *helper = Helper::instance();
+    // Render every output, not just the primary: the captured window may sit
+    // on any output in a multi-output setup.
+    helper->window()->render();
 }

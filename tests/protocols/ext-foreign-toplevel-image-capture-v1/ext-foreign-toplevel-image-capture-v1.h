@@ -18,8 +18,11 @@ struct ext_capture_state {
     int content_in_paint_order;
     int wrapper_width;
     int wrapper_height;
+    int wrapper_x; /* window position on the output (main-render checks) */
+    int wrapper_y;
     int content_x; /* main-surface top-left inside the capture buffer */
     int content_y;
+    int titlebar_height;
 };
 
 // Filled on the server thread; called by the client via the test bridge.
