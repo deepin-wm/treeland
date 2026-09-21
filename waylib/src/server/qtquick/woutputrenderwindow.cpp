@@ -1494,8 +1494,19 @@ WOutputRenderWindowPrivate::doRenderOutputs(wlr_output *needsFrameOutput, const 
         if (!helper->outputViewport()->depends().isEmpty())
             updateDirtyNodes();
 
-        wlr_buffer *buffer = helper->beginRender(helper->bufferRenderer(), helper->outputViewport()->output()->size(), format,
-                                                WBufferRenderer::RedirectOpenGLContextDefaultFrameBufferObject,
+        // A viewport with an explicit renderPixelSize renders for direct buffer
+        // consumers (e.g. ext-image-capture sources), not for output scanout.
+        // Its buffer is sized by the override and never committed, so it does
+        // not need the output-tested primary swapchain of the default path.
+        QSize pixelSize = helper->outputViewport()->output()->size();
+        WBufferRenderer::RenderFlags renderFlags = WBufferRenderer::RedirectOpenGLContextDefaultFrameBufferObject;
+        if (const QSize &customSize = helper->outputViewport()->renderPixelSize(); customSize.isValid()) {
+            pixelSize = customSize;
+            renderFlags |= WBufferRenderer::DontConfigureSwapchain;
+        }
+
+        wlr_buffer *buffer = helper->beginRender(helper->bufferRenderer(), pixelSize, format,
+                                                renderFlags,
                                                 helper->outputViewport()->colorContentsMode());
         Q_ASSERT(buffer == helper->bufferRenderer()->currentBuffer());
         if (buffer) {

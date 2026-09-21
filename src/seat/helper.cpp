@@ -3654,12 +3654,6 @@ void Helper::handleNewForeignToplevelCaptureRequest(wlr_ext_foreign_toplevel_ima
         return;
     }
 
-    auto *surfaceItem = surfaceWrapper->surfaceItem();
-    if (!surfaceItem) {
-        qCWarning(lcTlCapture) << "Could not get WSurfaceItem from SurfaceWrapper";
-        return;
-    }
-
     // Capture the window subtree (title bar, client surface, its subsurfaces
     // and the border) by rendering the wrapper's surface item into a
     // dedicated offscreen OutputViewport, and let the capture source read the
