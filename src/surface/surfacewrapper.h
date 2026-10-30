@@ -29,6 +29,7 @@ class QmlEngine;
 class Output;
 class SurfaceContainer;
 class SurfaceWindowTransition;
+class AnimationConfig;
 class TreelandUserConfig;
 class WindowTransitionTarget;
 class SurfaceWrapper : public QQuickItem
@@ -525,7 +526,7 @@ private:
     void finishWindowAnimation();
 
     // Per-effect animation switches. Each animated effect reads its own
-    // TreelandUserConfig key so products can combine them freely.
+    // AnimationConfig key so products can combine them freely.
     enum class WindowAnimationEffect {
         None,
         WindowOpen,
@@ -537,7 +538,7 @@ private:
     };
     enum class GeometryAnimationEffect { None, Maximize, Fullscreen, Restore, Splash };
 
-    bool animationEnabled(bool (TreelandUserConfig::*key)() const) const;
+    bool animationEnabled(bool (AnimationConfig::*key)() const) const;
     bool windowAnimationEnabled(WindowAnimationEffect effect) const;
     bool geometryAnimationEnabled(GeometryAnimationEffect effect) const;
     bool minimizeAnimationEnabled(uint direction) const;
