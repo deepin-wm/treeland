@@ -253,7 +253,9 @@ void ShellHandler::updateWrapperContainer(SurfaceWrapper *wrapper, WSurface *par
     }
 }
 
-// Prelaunch splash request: create a SurfaceWrapper that is not yet bound to a shellSurface
+// Prelaunch splash request: create a SurfaceWrapper that is not yet bound to a shellSurface.
+// `iconBuffer` arrives locked; this function owns that reference and either hands it to the
+// wrapper or unlocks it on the paths that create none.
 void ShellHandler::handlePrelaunchSplashRequested(const QString &appId,
                                                   const QString &instanceId,
                                                   wlr_buffer *iconBuffer)
@@ -323,15 +325,13 @@ void ShellHandler::createPrelaunchSplash(const QString &appId,
                           : splashThemeType == 2;
     const QColor splashColor = dark ? QColor(darkPalette) : QColor(lightPalette);
 
+    // The wrapper takes over this icon reference and releases it when destroyed.
     auto *wrapper = new SurfaceWrapper(WaylandServer::instance()->qmlEngine(),
                                        nullptr,
                                        lastSize,
                                        appId,
                                        iconBuffer,
                                        splashColor);
-    if (iconBuffer) {
-        wlr_buffer_unlock(iconBuffer);
-    }
     m_prelaunchWrappers.append(wrapper);
     m_workspace->addSurface(wrapper);
     setupSurfaceActiveWatcher(wrapper);

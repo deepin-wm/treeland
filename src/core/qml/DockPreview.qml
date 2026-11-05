@@ -71,6 +71,17 @@ Item {
     // free at the top of the frame.
     readonly property real titleRowHeight: titleFontMetrics.height
 
+    // The window the title row describes: the highlighted preview, clamped.
+    readonly property var currentWrapper: {
+        const surfaces = root.desiredSurfaces;
+        if (surfaces.length === 0)
+            return null;
+        // A tooltip-state list has no viewport (its size follows the model), so
+        // it never clamps currentIndex itself.
+        const index = Math.min(Math.max(listview.currentIndex, 0), surfaces.length - 1);
+        return surfaces[index] ?? null;
+    }
+
     // Natural size of one preview slot: the short side is fixed (120 tall on a
     // horizontal dock, 240 wide on a vertical one), the other side follows the
     // window's aspect ratio and is clamped so one slot never dominates the strip.
@@ -972,6 +983,39 @@ Item {
                 topMargin: root.panelVerticalPadding
             }
 
+            // AM splash icon (SurfaceWrapper::appIcon). An empty QVariant cannot be assigned
+            // to wlr_buffer*, so the item only exists while there is an icon.
+            Loader {
+                id: appIconLoader
+                readonly property var iconBuffer: root.currentWrapper?.appIcon ?? null
+                active: !!iconBuffer
+                visible: active
+                Layout.alignment: Qt.AlignVCenter
+                opacity: root.previewReveal
+                sourceComponent: Component {
+                    BufferItem {
+                        id: appIconItem
+                        implicitWidth: root.titleRowHeight
+                        implicitHeight: root.titleRowHeight
+                        smooth: true
+
+                        // `when` and RestoreNone keep both the activation and the deactivation
+                        // from writing a JS null back into wlr_buffer*.
+                        Binding {
+                            target: appIconItem
+                            property: "buffer"
+                            value: appIconLoader.iconBuffer
+                            when: !!appIconLoader.iconBuffer
+                            restoreMode: Binding.RestoreNone
+                        }
+
+                        // shortcut: a non-square icon is stretched to a square, not
+                        // letterboxed; AM icons are expected to be square. Upgrade to a
+                        // ratio-preserving fit if that stops holding.
+                    }
+                }
+            }
+
             Item {
                 id: titleTextArea
                 Layout.alignment: Qt.AlignVCenter
@@ -985,12 +1029,7 @@ Item {
                     anchors.top: parent.top
                     width: parent.width
                     text: {
-                        const surfaces = root.desiredSurfaces;
-                        if (surfaces.length === 0)
-                            return "";
-                        const index = Math.min(Math.max(listview.currentIndex, 0),
-                                               surfaces.length - 1);
-                        const wrapper = surfaces[index];
+                        const wrapper = root.currentWrapper;
                         return wrapper && wrapper.shellSurface
                                ? wrapper.shellSurface.title : "";
                     }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <wlr_fwd.h>
+#include <wpointer.h>
 #include <wsurfaceitem.h>
 #include <wtoplevelsurface.h>
 
@@ -12,6 +13,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QString>
+#include <QVariant>
 
 #include <memory>
 #include <optional>
@@ -53,6 +55,8 @@ class SurfaceWrapper : public QQuickItem
     Q_PROPERTY(WAYLIB_SERVER_NAMESPACE::WToplevelSurface* shellSurface READ shellSurface CONSTANT)
     Q_PROPERTY(WAYLIB_SERVER_NAMESPACE::WSurfaceItem* surfaceItem READ surfaceItem NOTIFY surfaceItemCreated)
     Q_PROPERTY(QQuickItem* prelaunchSplash READ prelaunchSplash NOTIFY prelaunchSplashChanged)
+    // AM-provided app icon, kept alive for the whole window lifetime.
+    Q_PROPERTY(QVariant appIcon READ appIcon CONSTANT)
     Q_PROPERTY(QRectF boundingRect READ boundingRect NOTIFY boundingRectChanged)
     Q_PROPERTY(QRectF geometry READ geometry NOTIFY geometryChanged FINAL)
     Q_PROPERTY(QRectF normalGeometry READ normalGeometry NOTIFY normalGeometryChanged FINAL)
@@ -175,7 +179,9 @@ public:
     explicit SurfaceWrapper(SurfaceWrapper *original, QQuickItem *parent = nullptr);
 
     // Constructor for pre-launch splash; allows passing an initial window size to stabilize UI
-    // early
+    // early. `iconBuffer` is a locked buffer whose reference the wrapper takes over and releases
+    // when destroyed; converting the splash in place keeps it, so dock preview can draw it after
+    // the client's wl_buffer and the splash item are gone.
     explicit SurfaceWrapper(QmlEngine *qmlEngine,
                             QQuickItem *parent,
                             const QSize &initialSize,
@@ -189,6 +195,7 @@ public:
     WToplevelSurface *shellSurface() const;
     WSurfaceItem *surfaceItem() const;
     QQuickItem *prelaunchSplash() const;
+    QVariant appIcon() const;
     QString appId() const;
     bool resize(const QSizeF &size, bool tryExec = false);
     void close();
@@ -636,6 +643,8 @@ private:
     QPointer<WSeat> m_pendingActivationSeat;
     std::unique_ptr<SurfaceWindowTransition> m_windowTransition;
     const QString m_appId;
+    // App icon buffer from the prelaunch splash request, owned (locked) by this wrapper.
+    WAYLIB_SERVER_NAMESPACE::WBufferUnlockPtr m_appIcon;
 };
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(SurfaceWrapper::ActiveControlStates)
