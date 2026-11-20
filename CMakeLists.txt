@@ -93,11 +93,11 @@ add_definitions("-DQT_MESSAGELOGCONTEXT")
 
 set(LOCAL_QML_IMPORT_PATH "${PROJECT_BINARY_DIR}/qt/qml")
 
+# PKG-CONFIG
+find_package(PkgConfig REQUIRED)
+
 if(WITH_SUBMODULE_WAYLIB)
     include(${CMAKE_CURRENT_SOURCE_DIR}/waylib/cmake/WaylandScannerHelpers.cmake)
-    # Vendored wlroots must be available before waylib consumers.
-    # Scaffold in wlroots/; upstream sources under 3rdparty/wlroots.
-    add_subdirectory(wlroots)
     add_subdirectory(waylib)
     list(APPEND LOCAL_QML_IMPORT_PATH "${PROJECT_BINARY_DIR}/waylib/src/server")
 else()
@@ -142,10 +142,25 @@ int main() { return 0; }
     include(${CMAKE_CURRENT_SOURCE_DIR}/waylib/cmake/WaylandScannerHelpers.cmake)
 endif()
 
+# wlroots is no longer vendored here: it comes from the installed dde-wlroots
+# development package (static libwaylib-wlroots.a), so nothing from it is
+# needed at runtime. Keep this after add_subdirectory(waylib): waylib resolves
+# the very same package itself when Wlroots::wlroots is not defined yet.
+if(NOT TARGET Wlroots::wlroots)
+    pkg_check_modules(WLR_INSTALLED REQUIRED IMPORTED_TARGET waylib-wlroots)
+    add_library(Wlroots::wlroots ALIAS PkgConfig::WLR_INSTALLED)
+endif()
+
+# wlroots-private protocol XMLs (wlr-layer-shell, drm, ...) for codegen.
+pkg_get_variable(WLROOTS_PROTOCOL_DIR waylib-wlroots wlroots_protocoldir)
+if(NOT WLROOTS_PROTOCOL_DIR)
+    message(FATAL_ERROR
+        "pkg-config module 'waylib-wlroots' provides no wlroots_protocoldir; "
+        "install libwaylib-wlroots-dev (dde-wlroots) to build treeland.")
+endif()
+
 set(QML_IMPORT_PATH "${LOCAL_QML_IMPORT_PATH}" CACHE STRING "For LSP" FORCE)
 
-# PKG-CONFIG
-find_package(PkgConfig REQUIRED)
 find_package(TreelandProtocols 0.8.0 CONFIG REQUIRED)
 find_package(Qt6 CONFIG REQUIRED Core DBus Gui Qml Quick QuickControls2 LinguistTools Test QuickTest)
 

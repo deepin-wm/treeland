@@ -1,8 +1,0 @@
-{
-	global:
-		wlr_*;
-		_wlr_*;
-		waylib_*;
-	local:
-		*;
-};
